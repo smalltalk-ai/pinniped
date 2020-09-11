@@ -3,3 +3,9 @@
   to = "https://github.com/suzerain-io/pinniped"
   status = 302
   force = true
+
+[[redirects]]
+  from = "/meet"
+  to = "https://VMware.zoom.us/j/95817013210?pwd=U1NDRjVvck9jNWpXUGFhYmxraWVIUT09&from=msft"
+  status = 302
+  force = true
