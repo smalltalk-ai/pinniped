@@ -1,0 +1,10 @@
+{
+  "domain": "go.pinniped.dev",
+  "repositories": [
+    {
+      "prefix": "",
+      "subs": [],
+      "url": "https://github.com/vmware-tanzu/pinniped"
+    }
+  ]
+}
