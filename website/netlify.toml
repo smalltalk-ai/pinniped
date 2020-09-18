@@ -1,6 +1,6 @@
 [[redirects]]
   from = "/"
-  to = "https://github.com/suzerain-io/pinniped"
+  to = "https://github.com/vmware-tanzu/pinniped"
   status = 302
   force = true
 
