@@ -1,4 +1,10 @@
 [[redirects]]
+  from = "/community"
+  to = "https://github.com/vmware-tanzu/pinniped/blob/main/CONTRIBUTING.md#meeting-with-the-maintainers"
+  status = 302
+  force = true
+
+[[redirects]]
   from = "/community/zoom"
   to = "https://vmware.zoom.us/j/94638309756?pwd=V3NvRXJIdDg5QVc0TUdFM2dYRzgrUT09"
   status = 302
