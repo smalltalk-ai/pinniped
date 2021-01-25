@@ -23,6 +23,9 @@
         background-repeat: no-repeat;
         background-size: cover;
         padding-bottom: 80px;
+        h1 {
+            font-size: 36px;
+        }
     }
     @include breakpoint(small) {
         .text-block {
@@ -404,6 +407,7 @@
     background-color: #fff;
     margin-top: -90px;
     padding: 30px 30px 50px 30px;
+    display: flex;
     .side-nav {
         width: 25%;
         float: left;
@@ -435,6 +439,12 @@
                     font-size: 14px;
                 }
             }
+        }
+        @include breakpoint(extra-large) {
+            width: 22%;
+        }
+        @include breakpoint(large) {
+            width: 22%;
         }
     }
     .docs-content {
