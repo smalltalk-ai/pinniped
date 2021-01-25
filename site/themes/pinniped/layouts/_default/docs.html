@@ -2,15 +2,16 @@
 	<main>
 		<div class="hero subpage">
 			<div class="wrapper">
-				<h2>Pinniped Documentation</h2>
+				<h1>Pinniped Documentation</h1>
 			</div>
 		</div>
 		<div class="wrapper docs clearfix">
 			{{ partial "docs-sidebar.html" . }}
 			
-			<div class="docs-content">
+			<div class="docs-content {{ if not .Site.Params.docs_right_sidebar }}full{{ end }}">
 				{{ .Content }}
 			</div>
+			{{ partial "docs-right-bar.html" . }}
 		</div>
 	</main>
 {{ end }}
