@@ -57,7 +57,7 @@
                 font-size: 22px;
             }
             p {
-                color: $grey;
+                color: $darkgrey;
             }
         }
     }
@@ -183,6 +183,14 @@
     background-repeat: no-repeat;
     background-size: cover;
     padding-bottom: 140px;
+
+    h1 {
+        font-size: 46px;
+        text-align: center;
+        @include breakpoint(small) {
+            font-size: 26px;
+        }
+    }
 }
 
 .experimental {
@@ -267,6 +275,7 @@
             font-size: 16px;
         }
         ul {
+<<<<<<< HEAD
             list-style-type: disc;
             padding-left: 20px;
             li:first-child {
@@ -321,6 +330,26 @@
         }
         img {
             max-width: 100%;
+=======
+            li {
+                color: $darkgrey;
+                &:first-child {
+                    margin-top: 10px;
+                }
+            }
+        }
+        ol {
+            li {
+                font-size: 16px;
+                color: $darkgrey;
+                &:first-child {
+                    margin-top: 10px;
+                }
+            }
+        }
+        code {
+            color: $darkgrey;
+>>>>>>> style updates based on https://github.com/vmware-tanzu/pinniped/pull/426
         }
         strong {
             font-family: $metropolis-medium;
@@ -428,7 +457,7 @@
                 display: list-item;
                 margin-bottom: 15px;
                 a {
-                    color: $grey;
+                    color: $darkgrey;
                     font-size: 14px;
                     &.active {
                         color: $blue;
