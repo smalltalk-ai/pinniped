@@ -53,7 +53,7 @@
                 font-size: 22px;
             }
             p {
-                color: $grey;
+                color: $darkgrey;
             }
         }
     }
@@ -66,7 +66,7 @@
         p {
             margin: 0px;
             &.strong {
-                color: $black;
+                color: $darkgrey;
             }
         }
     }
@@ -175,6 +175,14 @@
     background-repeat: no-repeat;
     background-size: cover;
     padding-bottom: 140px;
+
+    h1 {
+        font-size: 46px;
+        text-align: center;
+        @include breakpoint(small) {
+            font-size: 26px;
+        }
+    }
 }
 
 .experimental {
@@ -251,6 +259,32 @@
         .header, h4 {
             color: $black;
             font-weight: 600;
+        }
+        a {
+            font-size: 16px;
+        }
+        ul {
+            li {
+                color: $darkgrey;
+                &:first-child {
+                    margin-top: 10px;
+                }
+            }
+        }
+        ol {
+            li {
+                font-size: 16px;
+                color: $darkgrey;
+                &:first-child {
+                    margin-top: 10px;
+                }
+            }
+        }
+        code {
+            color: $darkgrey;
+        }
+        strong {
+            font-family: $metropolis-medium;
         }
     }
 }
@@ -345,7 +379,7 @@
                 display: list-item;
                 margin-bottom: 15px;
                 a {
-                    color: $grey;
+                    color: $darkgrey;
                     font-size: 14px;
                     &.active {
                         color: $blue;
@@ -377,18 +411,30 @@
                 list-style-type: unset;
                 display: list-item;
                 margin-bottom: 10px;
-                font-size: 14px;
-                color: $grey;
+                font-size: 16px;
+                color: $darkgrey;
                 line-height: 1.6em;
                 list-style-image: url(/img/arrow.svg);
                 a {
-                    font-size: 14px;
+                    font-size: 16px;
+                }
+                &:first-child {
+                    margin-top: 10px;
+                }
+            }
+        }
+        ol {
+            li {
+                font-size: 16px;
+                color: $darkgrey;
+                &:first-child {
+                    margin-top: 10px;
                 }
             }
         }
         code {
             background-color: $white;
-            color: $grey;
+            color: $darkgrey;
             border: 2px solid #EFEFEF;
             padding: 2px 8px;
             .c1 {
