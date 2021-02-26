@@ -182,7 +182,7 @@
     background-position: center center;
     background-repeat: no-repeat;
     background-size: cover;
-    padding-bottom: 140px;
+    padding-bottom: 90px;
 
     h1 {
         font-size: 46px;
@@ -275,7 +275,6 @@
             font-size: 16px;
         }
         ul {
-<<<<<<< HEAD
             list-style-type: disc;
             padding-left: 20px;
             li:first-child {
@@ -330,26 +329,6 @@
         }
         img {
             max-width: 100%;
-=======
-            li {
-                color: $darkgrey;
-                &:first-child {
-                    margin-top: 10px;
-                }
-            }
-        }
-        ol {
-            li {
-                font-size: 16px;
-                color: $darkgrey;
-                &:first-child {
-                    margin-top: 10px;
-                }
-            }
-        }
-        code {
-            color: $darkgrey;
->>>>>>> style updates based on https://github.com/vmware-tanzu/pinniped/pull/426
         }
         strong {
             font-family: $metropolis-medium;
