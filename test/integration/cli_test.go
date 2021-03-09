@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 package integration
 
@@ -11,28 +11,31 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sclevine/agouti"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/square/go-jose.v2"
 	clientauthenticationv1beta1 "k8s.io/client-go/pkg/apis/clientauthentication/v1beta1"
 
-	"go.pinniped.dev/internal/oidcclient"
-	"go.pinniped.dev/internal/oidcclient/filesession"
+	"go.pinniped.dev/internal/testutil"
+	"go.pinniped.dev/pkg/oidcclient"
+	"go.pinniped.dev/pkg/oidcclient/filesession"
 	"go.pinniped.dev/test/library"
+	"go.pinniped.dev/test/library/browsertest"
 )
 
-func TestCLIGetKubeconfig(t *testing.T) {
+func TestCLIGetKubeconfigStaticToken(t *testing.T) {
 	env := library.IntegrationEnv(t).WithCapability(library.ClusterSigningKeyIsAvailable)
+
+	library.AssertNoRestartsDuringTest(t, env.ConciergeNamespace, "")
 
 	// Create a test webhook configuration to use with the CLI.
 	ctx, cancelFunc := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -41,108 +44,69 @@ func TestCLIGetKubeconfig(t *testing.T) {
 	authenticator := library.CreateTestWebhookAuthenticator(ctx, t)
 
 	// Build pinniped CLI.
-	pinnipedExe := buildPinnipedCLI(t)
+	pinnipedExe := library.PinnipedCLIPath(t)
 
-	// Run pinniped CLI to get kubeconfig.
-	kubeConfigYAML := runPinnipedCLIGetKubeconfig(t, pinnipedExe, env.TestUser.Token, env.ConciergeNamespace, "webhook", authenticator.Name)
-
-	// In addition to the client-go based testing below, also try the kubeconfig
-	// with kubectl to validate that it works.
-	adminClient := library.NewClientset(t)
-	t.Run(
-		"access as user with kubectl",
-		library.AccessAsUserWithKubectlTest(ctx, adminClient, kubeConfigYAML, env.TestUser.ExpectedUsername, env.ConciergeNamespace),
-	)
-	for _, group := range env.TestUser.ExpectedGroups {
-		group := group
-		t.Run(
-			"access as group "+group+" with kubectl",
-			library.AccessAsGroupWithKubectlTest(ctx, adminClient, kubeConfigYAML, group, env.ConciergeNamespace),
-		)
-	}
-
-	// Create Kubernetes client with kubeconfig from pinniped CLI.
-	kubeClient := library.NewClientsetForKubeConfig(t, kubeConfigYAML)
-
-	// Validate that we can auth to the API via our user.
-	t.Run("access as user with client-go", library.AccessAsUserTest(ctx, adminClient, env.TestUser.ExpectedUsername, kubeClient))
-	for _, group := range env.TestUser.ExpectedGroups {
-		group := group
-		t.Run("access as group "+group+" with client-go", library.AccessAsGroupTest(ctx, adminClient, group, kubeClient))
-	}
-}
-
-func buildPinnipedCLI(t *testing.T) string {
-	t.Helper()
-
-	pinnipedExeDir, err := ioutil.TempDir("", "pinniped-cli-test-*")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, os.RemoveAll(pinnipedExeDir)) })
-
-	pinnipedExe := filepath.Join(pinnipedExeDir, "pinniped")
-	output, err := exec.Command(
-		"go",
-		"build",
-		"-o",
-		pinnipedExe,
-		"go.pinniped.dev/cmd/pinniped",
-	).CombinedOutput()
-	require.NoError(t, err, string(output))
-	return pinnipedExe
-}
-
-func runPinnipedCLIGetKubeconfig(t *testing.T, pinnipedExe, token, namespaceName, authenticatorType, authenticatorName string) string {
-	t.Helper()
-
-	output, err := exec.Command(
-		pinnipedExe,
-		"get-kubeconfig",
-		"--token", token,
-		"--pinniped-namespace", namespaceName,
-		"--authenticator-type", authenticatorType,
-		"--authenticator-name", authenticatorName,
-	).CombinedOutput()
-	require.NoError(t, err, string(output))
-
-	return string(output)
-}
-
-type loginProviderPatterns struct {
-	Name                string
-	IssuerPattern       *regexp.Regexp
-	LoginPagePattern    *regexp.Regexp
-	UsernameSelector    string
-	PasswordSelector    string
-	LoginButtonSelector string
-}
-
-func getLoginProvider(t *testing.T) *loginProviderPatterns {
-	t.Helper()
-	issuer := library.IntegrationEnv(t).OIDCUpstream.Issuer
-	for _, p := range []loginProviderPatterns{
+	for _, tt := range []struct {
+		name         string
+		args         []string
+		expectStderr string
+	}{
 		{
-			Name:                "Okta",
-			IssuerPattern:       regexp.MustCompile(`\Ahttps://.+\.okta\.com/.+\z`),
-			LoginPagePattern:    regexp.MustCompile(`\Ahttps://.+\.okta\.com/.+\z`),
-			UsernameSelector:    "input#okta-signin-username",
-			PasswordSelector:    "input#okta-signin-password",
-			LoginButtonSelector: "input#okta-signin-submit",
-		},
-		{
-			Name:                "Dex",
-			IssuerPattern:       regexp.MustCompile(`\Ahttp://127\.0\.0\.1.+/dex.*\z`),
-			LoginPagePattern:    regexp.MustCompile(`\Ahttp://127\.0\.0\.1.+/dex/auth/local.+\z`),
-			UsernameSelector:    "input#login",
-			PasswordSelector:    "input#password",
-			LoginButtonSelector: "button#submit-login",
+			name: "newer command, but still using static parameters",
+			args: []string{
+				"get", "kubeconfig",
+				"--static-token", env.TestUser.Token,
+				"--concierge-api-group-suffix", env.APIGroupSuffix,
+				"--concierge-authenticator-type", "webhook",
+				"--concierge-authenticator-name", authenticator.Name,
+			},
 		},
 	} {
-		if p.IssuerPattern.MatchString(issuer) {
-			return &p
-		}
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr := runPinnipedCLI(t, pinnipedExe, tt.args...)
+			require.Equal(t, tt.expectStderr, stderr)
+
+			// Even the deprecated command should now generate a kubeconfig with the new "pinniped login static" command.
+			restConfig := library.NewRestConfigFromKubeconfig(t, stdout)
+			require.NotNil(t, restConfig.ExecProvider)
+			require.Equal(t, []string{"login", "static"}, restConfig.ExecProvider.Args[:2])
+
+			// In addition to the client-go based testing below, also try the kubeconfig
+			// with kubectl to validate that it works.
+			t.Run(
+				"access as user with kubectl",
+				library.AccessAsUserWithKubectlTest(stdout, env.TestUser.ExpectedUsername, env.ConciergeNamespace),
+			)
+			for _, group := range env.TestUser.ExpectedGroups {
+				group := group
+				t.Run(
+					"access as group "+group+" with kubectl",
+					library.AccessAsGroupWithKubectlTest(stdout, group, env.ConciergeNamespace),
+				)
+			}
+
+			// Create Kubernetes client with kubeconfig from pinniped CLI.
+			kubeClient := library.NewClientsetForKubeConfig(t, stdout)
+
+			// Validate that we can auth to the API via our user.
+			t.Run("access as user with client-go", library.AccessAsUserTest(ctx, env.TestUser.ExpectedUsername, kubeClient))
+			for _, group := range env.TestUser.ExpectedGroups {
+				group := group
+				t.Run("access as group "+group+" with client-go", library.AccessAsGroupTest(ctx, group, kubeClient))
+			}
+		})
 	}
-	require.Failf(t, "could not find login provider for issuer %q", issuer)
-	return nil
+}
+
+func runPinnipedCLI(t *testing.T, pinnipedExe string, args ...string) (string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(pinnipedExe, args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	require.NoErrorf(t, cmd.Run(), "stderr:\n%s\n\nstdout:\n%s\n\n", stderr.String(), stdout.String())
+	return stdout.String(), stderr.String()
 }
 
 func TestCLILoginOIDC(t *testing.T) {
@@ -151,33 +115,92 @@ func TestCLILoginOIDC(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Find the login CSS selectors for the test issuer, or fail fast.
-	loginProvider := getLoginProvider(t)
-
-	// Start the browser driver.
-	t.Logf("opening browser driver")
-	agoutiDriver := agouti.ChromeDriver(
-		agouti.ChromeOptions("args", []string{
-			"--no-sandbox",
-			"--headless", // Comment out this line to see the tests happen in a visible browser window.
-		}),
-		// Uncomment this to see stdout/stderr from chromedriver.
-		// agouti.Debug,
-	)
-	require.NoError(t, agoutiDriver.Start())
-	t.Cleanup(func() { require.NoError(t, agoutiDriver.Stop()) })
-	page, err := agoutiDriver.NewPage(agouti.Browser("chrome"))
-	require.NoError(t, err)
-	require.NoError(t, page.Reset())
-
 	// Build pinniped CLI.
-	t.Logf("building CLI binary")
-	pinnipedExe := buildPinnipedCLI(t)
+	pinnipedExe := library.PinnipedCLIPath(t)
+
+	// Run "pinniped login oidc" to get an ExecCredential struct with an OIDC ID token.
+	credOutput, sessionCachePath := runPinnipedLoginOIDC(ctx, t, pinnipedExe)
+
+	// Assert some properties of the ExecCredential.
+	t.Logf("validating ExecCredential")
+	require.NotNil(t, credOutput.Status)
+	require.Empty(t, credOutput.Status.ClientKeyData)
+	require.Empty(t, credOutput.Status.ClientCertificateData)
+
+	// There should be at least 1 minute of remaining expiration (probably more).
+	require.NotNil(t, credOutput.Status.ExpirationTimestamp)
+	ttl := time.Until(credOutput.Status.ExpirationTimestamp.Time)
+	require.Greater(t, ttl.Milliseconds(), (1 * time.Minute).Milliseconds())
+
+	// Assert some properties about the token, which should be a valid JWT.
+	require.NotEmpty(t, credOutput.Status.Token)
+	jws, err := jose.ParseSigned(credOutput.Status.Token)
+	require.NoError(t, err)
+	claims := map[string]interface{}{}
+	require.NoError(t, json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &claims))
+	require.Equal(t, env.CLITestUpstream.Issuer, claims["iss"])
+	require.Equal(t, env.CLITestUpstream.ClientID, claims["aud"])
+	require.Equal(t, env.CLITestUpstream.Username, claims["email"])
+	require.NotEmpty(t, claims["nonce"])
+
+	// Run the CLI again with the same session cache and login parameters.
+	t.Logf("starting second CLI subprocess to test session caching")
+	cmd2Output, err := oidcLoginCommand(ctx, t, pinnipedExe, sessionCachePath).CombinedOutput()
+	require.NoError(t, err, string(cmd2Output))
+
+	// Expect the CLI to output the same ExecCredential in JSON format.
+	t.Logf("validating second ExecCredential")
+	var credOutput2 clientauthenticationv1beta1.ExecCredential
+	require.NoErrorf(t, json.Unmarshal(cmd2Output, &credOutput2),
+		"command returned something other than an ExecCredential:\n%s", string(cmd2Output))
+	require.Equal(t, credOutput, credOutput2)
+
+	// Overwrite the cache entry to remove the access and ID tokens.
+	t.Logf("overwriting cache to remove valid ID token")
+	cache := filesession.New(sessionCachePath)
+	cacheKey := oidcclient.SessionCacheKey{
+		Issuer:      env.CLITestUpstream.Issuer,
+		ClientID:    env.CLITestUpstream.ClientID,
+		Scopes:      []string{"email", "offline_access", "openid", "profile"},
+		RedirectURI: strings.ReplaceAll(env.CLITestUpstream.CallbackURL, "127.0.0.1", "localhost"),
+	}
+	cached := cache.GetToken(cacheKey)
+	require.NotNil(t, cached)
+	require.NotNil(t, cached.RefreshToken)
+	require.NotEmpty(t, cached.RefreshToken.Token)
+	cached.IDToken = nil
+	cached.AccessToken = nil
+	cache.PutToken(cacheKey, cached)
+
+	// Run the CLI a third time with the same session cache and login parameters.
+	t.Logf("starting third CLI subprocess to test refresh flow")
+	cmd3Output, err := oidcLoginCommand(ctx, t, pinnipedExe, sessionCachePath).CombinedOutput()
+	require.NoError(t, err, string(cmd2Output))
+
+	// Expect the CLI to output a new ExecCredential in JSON format (different from the one returned the first two times).
+	t.Logf("validating third ExecCredential")
+	var credOutput3 clientauthenticationv1beta1.ExecCredential
+	require.NoErrorf(t, json.Unmarshal(cmd3Output, &credOutput3),
+		"command returned something other than an ExecCredential:\n%s", string(cmd2Output))
+	require.NotEqual(t, credOutput2.Status.Token, credOutput3.Status.Token)
+}
+
+func runPinnipedLoginOIDC(
+	ctx context.Context,
+	t *testing.T,
+	pinnipedExe string,
+) (clientauthenticationv1beta1.ExecCredential, string) {
+	t.Helper()
+
+	env := library.IntegrationEnv(t)
 
 	// Make a temp directory to hold the session cache for this test.
-	sessionCachePath := t.TempDir() + "/sessions.yaml"
+	sessionCachePath := testutil.TempDir(t) + "/sessions.yaml"
 
-	// Start the CLI running the "alpha login oidc [...]" command with stdout/stderr connected to pipes.
+	// Start the browser driver.
+	page := browsertest.Open(t)
+
+	// Start the CLI running the "login oidc [...]" command with stdout/stderr connected to pipes.
 	cmd := oidcLoginCommand(ctx, t, pinnipedExe, sessionCachePath)
 	stderr, err := cmd.StderrPipe()
 	require.NoError(t, err)
@@ -221,7 +244,7 @@ func TestCLILoginOIDC(t *testing.T) {
 	credOutputChan := make(chan clientauthenticationv1beta1.ExecCredential)
 	spawnTestGoroutine(t, func() (err error) {
 		defer func() {
-			closeErr := stderr.Close()
+			closeErr := stdout.Close()
 			if closeErr == nil || errors.Is(closeErr, os.ErrClosed) {
 				return
 			}
@@ -249,28 +272,18 @@ func TestCLILoginOIDC(t *testing.T) {
 	t.Logf("navigating to login page")
 	require.NoError(t, page.Navigate(loginURL))
 
-	// Expect to be redirected to the login page.
-	t.Logf("waiting for redirect to %s login page", loginProvider.Name)
-	waitForURL(t, page, loginProvider.LoginPagePattern)
+	// Expect to be redirected to the upstream provider and log in.
+	browsertest.LoginToUpstream(t, page, env.CLITestUpstream)
 
-	// Wait for the login page to be rendered.
-	waitForVisibleElements(t, page, loginProvider.UsernameSelector, loginProvider.PasswordSelector, loginProvider.LoginButtonSelector)
-
-	// Fill in the username and password and click "submit".
-	t.Logf("logging into %s", loginProvider.Name)
-	require.NoError(t, page.First(loginProvider.UsernameSelector).Fill(env.OIDCUpstream.Username))
-	require.NoError(t, page.First(loginProvider.PasswordSelector).Fill(env.OIDCUpstream.Password))
-	require.NoError(t, page.First(loginProvider.LoginButtonSelector).Click())
-
-	// Wait for the login to happen and us be redirected back to a localhost callback.
-	t.Logf("waiting for redirect to localhost callback")
-	callbackURLPattern := regexp.MustCompile(`\Ahttp://127.0.0.1:` + strconv.Itoa(env.OIDCUpstream.LocalhostPort) + `/.+\z`)
-	waitForURL(t, page, callbackURLPattern)
+	// Expect to be redirected to the localhost callback.
+	t.Logf("waiting for redirect to callback")
+	callbackURLPattern := regexp.MustCompile(`\A` + regexp.QuoteMeta(env.CLITestUpstream.CallbackURL) + `\?.+\z`)
+	browsertest.WaitForURL(t, page, callbackURLPattern)
 
 	// Wait for the "pre" element that gets rendered for a `text/plain` page, and
 	// assert that it contains the success message.
 	t.Logf("verifying success page")
-	waitForVisibleElements(t, page, "pre")
+	browsertest.WaitForVisibleElements(t, page, "pre")
 	msg, err := page.First("pre").Text()
 	require.NoError(t, err)
 	require.Equal(t, "you have been logged in and may now close this tab", msg)
@@ -284,92 +297,7 @@ func TestCLILoginOIDC(t *testing.T) {
 	case credOutput = <-credOutputChan:
 	}
 
-	// Assert some properties of the ExecCredential.
-	t.Logf("validating ExecCredential")
-	require.NotNil(t, credOutput.Status)
-	require.Empty(t, credOutput.Status.ClientKeyData)
-	require.Empty(t, credOutput.Status.ClientCertificateData)
-
-	// There should be at least 1 minute of remaining expiration (probably more).
-	require.NotNil(t, credOutput.Status.ExpirationTimestamp)
-	ttl := time.Until(credOutput.Status.ExpirationTimestamp.Time)
-	require.Greater(t, ttl.Milliseconds(), (1 * time.Minute).Milliseconds())
-
-	// Assert some properties about the token, which should be a valid JWT.
-	require.NotEmpty(t, credOutput.Status.Token)
-	jws, err := jose.ParseSigned(credOutput.Status.Token)
-	require.NoError(t, err)
-	claims := map[string]interface{}{}
-	require.NoError(t, json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &claims))
-	require.Equal(t, env.OIDCUpstream.Issuer, claims["iss"])
-	require.Equal(t, env.OIDCUpstream.ClientID, claims["aud"])
-	require.Equal(t, env.OIDCUpstream.Username, claims["email"])
-	require.NotEmpty(t, claims["nonce"])
-
-	// Run the CLI again with the same session cache and login parameters.
-	t.Logf("starting second CLI subprocess to test session caching")
-	cmd2Output, err := oidcLoginCommand(ctx, t, pinnipedExe, sessionCachePath).CombinedOutput()
-	require.NoError(t, err, string(cmd2Output))
-
-	// Expect the CLI to output the same ExecCredential in JSON format.
-	t.Logf("validating second ExecCredential")
-	var credOutput2 clientauthenticationv1beta1.ExecCredential
-	require.NoErrorf(t, json.Unmarshal(cmd2Output, &credOutput2),
-		"command returned something other than an ExecCredential:\n%s", string(cmd2Output))
-	require.Equal(t, credOutput, credOutput2)
-
-	// Overwrite the cache entry to remove the access and ID tokens.
-	t.Logf("overwriting cache to remove valid ID token")
-	cache := filesession.New(sessionCachePath)
-	cacheKey := oidcclient.SessionCacheKey{
-		Issuer:      env.OIDCUpstream.Issuer,
-		ClientID:    env.OIDCUpstream.ClientID,
-		Scopes:      []string{"email", "offline_access", "openid", "profile"},
-		RedirectURI: fmt.Sprintf("http://localhost:%d/callback", env.OIDCUpstream.LocalhostPort),
-	}
-	cached := cache.GetToken(cacheKey)
-	require.NotNil(t, cached)
-	require.NotNil(t, cached.RefreshToken)
-	require.NotEmpty(t, cached.RefreshToken.Token)
-	cached.IDToken = nil
-	cached.AccessToken = nil
-	cache.PutToken(cacheKey, cached)
-
-	// Run the CLI a third time with the same session cache and login parameters.
-	t.Logf("starting third CLI subprocess to test refresh flow")
-	cmd3Output, err := oidcLoginCommand(ctx, t, pinnipedExe, sessionCachePath).CombinedOutput()
-	require.NoError(t, err, string(cmd2Output))
-
-	// Expect the CLI to output a new ExecCredential in JSON format (different from the one returned the first two times).
-	t.Logf("validating third ExecCredential")
-	var credOutput3 clientauthenticationv1beta1.ExecCredential
-	require.NoErrorf(t, json.Unmarshal(cmd3Output, &credOutput3),
-		"command returned something other than an ExecCredential:\n%s", string(cmd2Output))
-	require.NotEqual(t, credOutput2.Status.Token, credOutput3.Status.Token)
-}
-
-func waitForVisibleElements(t *testing.T, page *agouti.Page, selectors ...string) {
-	t.Helper()
-	require.Eventually(t,
-		func() bool {
-			for _, sel := range selectors {
-				vis, err := page.First(sel).Visible()
-				if !(err == nil && vis) {
-					return false
-				}
-			}
-			return true
-		},
-		10*time.Second,
-		100*time.Millisecond,
-	)
-}
-
-func waitForURL(t *testing.T, page *agouti.Page, pat *regexp.Regexp) {
-	require.Eventually(t, func() bool {
-		url, err := page.URL()
-		return err == nil && pat.MatchString(url)
-	}, 10*time.Second, 100*time.Millisecond)
+	return credOutput, sessionCachePath
 }
 
 func readAndExpectEmpty(r io.Reader) (err error) {
@@ -395,11 +323,25 @@ func spawnTestGoroutine(t *testing.T, f func() error) {
 
 func oidcLoginCommand(ctx context.Context, t *testing.T, pinnipedExe string, sessionCachePath string) *exec.Cmd {
 	env := library.IntegrationEnv(t)
-	return exec.CommandContext(ctx, pinnipedExe, "login", "oidc",
-		"--issuer", env.OIDCUpstream.Issuer,
-		"--client-id", env.OIDCUpstream.ClientID,
-		"--listen-port", strconv.Itoa(env.OIDCUpstream.LocalhostPort),
+	callbackURL, err := url.Parse(env.CLITestUpstream.CallbackURL)
+	require.NoError(t, err)
+	cmd := exec.CommandContext(ctx, pinnipedExe, "login", "oidc",
+		"--issuer", env.CLITestUpstream.Issuer,
+		"--client-id", env.CLITestUpstream.ClientID,
+		"--scopes", "offline_access,openid,email,profile",
+		"--listen-port", callbackURL.Port(),
 		"--session-cache", sessionCachePath,
 		"--skip-browser",
 	)
+
+	// If there is a custom CA bundle, pass it via --ca-bundle and a temporary file.
+	if env.CLITestUpstream.CABundle != "" {
+		path := filepath.Join(testutil.TempDir(t), "test-ca.pem")
+		require.NoError(t, ioutil.WriteFile(path, []byte(env.CLITestUpstream.CABundle), 0600))
+		cmd.Args = append(cmd.Args, "--ca-bundle", path)
+	}
+
+	// If there is a custom proxy, set it using standard environment variables.
+	cmd.Env = append(os.Environ(), env.ProxyEnv()...)
+	return cmd
 }

@@ -11,14 +11,14 @@ spec:
   group: authentication.concierge.pinniped.dev
   names:
     categories:
-    - all
-    - authenticator
-    - authenticators
+    - pinniped
+    - pinniped-authenticator
+    - pinniped-authenticators
     kind: WebhookAuthenticator
     listKind: WebhookAuthenticatorList
     plural: webhookauthenticators
     singular: webhookauthenticator
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.endpoint
@@ -137,7 +137,8 @@ spec:
         type: object
     served: true
     storage: true
-    subresources: {}
+    subresources:
+      status: {}
 status:
   acceptedNames:
     kind: ""

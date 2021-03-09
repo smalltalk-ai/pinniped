@@ -8,24 +8,17 @@ Please see the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## Project Scope
 
-Learn about the [scope](doc/scope.md) of the project.
+See [SCOPE.md](./SCOPE.md) for some guidelines about what we consider in and out of scope for Pinniped.
 
-## Meeting with the Maintainers
+## Community Meetings
 
-The maintainers aspire to hold a video conference every other week with the Pinniped community.
-Any community member may request to add topics to the agenda by contacting a [maintainer](MAINTAINERS.md)
-in advance, or by attending and raising the topic during time remaining after the agenda is covered.
-Typical agenda items include topics regarding the roadmap, feature requests, bug reports, pull requests, etc.
-A [public document](https://docs.google.com/document/d/1qYA35wZV-6bxcH5375vOnIGkNBo7e4OROgsV4Sj8WjQ)
-tracks the agendas and notes for these meetings.
+Pinniped is better because of our contributors and maintainers. It is because of you that we can bring great software to the community. Please join us during our online community meetings, occuring every first and third Thursday of the month at 9AM PT / 12PM PT. Use [this Zoom Link](https://vmware.zoom.us/j/93798188973?pwd=T3pIMWxReEQvcWljNm1admRoZTFSZz09) to attend and add any agenda items you wish to discuss to [the notes document](https://hackmd.io/rd_kVJhjQfOvfAWzK8A3tQ?view). Join our [Google Group](https://groups.google.com/u/1/g/project-pinniped) to receive invites to this meeting.
 
-These meetings are currently scheduled for the first and third Thursday mornings of each month
-at 9 AM Pacific Time, using this [Zoom meeting](https://VMware.zoom.us/j/94638309756?pwd=V3NvRXJIdDg5QVc0TUdFM2dYRzgrUT09).
 If the meeting day falls on a US holiday, please consider that occurrence of the meeting to be canceled.
 
 ## Discussion
 
-Got a question, comment, or idea? Please don't hesitate to reach out via the GitHub [Discussions](https://github.com/vmware-tanzu/pinniped/discussions) tab at the top of this page.
+Got a question, comment, or idea? Please don't hesitate to reach out via the GitHub [Discussions](https://github.com/vmware-tanzu/pinniped/discussions) tab at the top of this page or reach out in Kubernetes Slack Workspace within the [#pinniped channel](https://kubernetes.slack.com/archives/C01BW364RJA).
 
 ## Issues
 
@@ -97,16 +90,19 @@ docker build .
 
 1. Install dependencies:
 
+   - [`chromedriver`](https://chromedriver.chromium.org/) (and [Chrome](https://www.google.com/chrome/))
+   - [`docker`](https://www.docker.com/)
+   - `htpasswd` (installed by default on MacOS, usually found in `apache2-utils` package for linux)
+   - [`kapp`](https://carvel.dev/#getting-started)
    - [`kind`](https://kind.sigs.k8s.io/docs/user/quick-start)
+   - [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
    - [`tilt`](https://docs.tilt.dev/install.html)
    - [`ytt`](https://carvel.dev/#getting-started)
-   - [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
-   - [`chromedriver`](https://chromedriver.chromium.org/) (and [Chrome](https://www.google.com/chrome/))
 
    On macOS, these tools can be installed with [Homebrew](https://brew.sh/) (assuming you have Chrome installed already):
 
    ```bash
-   brew install kind tilt-dev/tap/tilt k14s/tap/ytt kubectl chromedriver
+   brew install kind tilt-dev/tap/tilt k14s/tap/ytt k14s/tap/kapp kubectl chromedriver && brew cask install docker
    ```
 
 1. Create a local Kubernetes cluster using `kind`:

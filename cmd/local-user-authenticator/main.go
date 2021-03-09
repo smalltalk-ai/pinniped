@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package main provides a authentication webhook program.
@@ -31,13 +31,14 @@ import (
 	kubeinformers "k8s.io/client-go/informers"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"go.pinniped.dev/internal/constable"
 	"go.pinniped.dev/internal/controller/apicerts"
 	"go.pinniped.dev/internal/controllerlib"
 	"go.pinniped.dev/internal/dynamiccert"
+	"go.pinniped.dev/internal/kubeclient"
+	"go.pinniped.dev/internal/plog"
 )
 
 const (
@@ -92,11 +93,11 @@ func (w *webhook) start(ctx context.Context, l net.Listener) error {
 	go func() {
 		select {
 		case err := <-errCh:
-			klog.InfoS("server exited", "err", err)
+			plog.Debug("server exited", "err", err)
 		case <-ctx.Done():
-			klog.InfoS("server context cancelled", "err", ctx.Err())
+			plog.Debug("server context cancelled", "err", ctx.Err())
 			if err := server.Shutdown(context.Background()); err != nil {
-				klog.InfoS("server shutdown failed", "err", err)
+				plog.Debug("server shutdown failed", "err", err)
 			}
 		}
 	}()
@@ -114,13 +115,13 @@ func (w *webhook) ServeHTTP(rsp http.ResponseWriter, req *http.Request) {
 	secret, err := w.secretInformer.Lister().Secrets(namespace).Get(username)
 	notFound := k8serrors.IsNotFound(err)
 	if err != nil && !notFound {
-		klog.InfoS("could not get secret", "err", err)
+		plog.Debug("could not get secret", "err", err)
 		rsp.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	if notFound {
-		klog.InfoS("user not found")
+		plog.Debug("user not found")
 		respondWithUnauthenticated(rsp)
 		return
 	}
@@ -130,7 +131,7 @@ func (w *webhook) ServeHTTP(rsp http.ResponseWriter, req *http.Request) {
 		[]byte(password),
 	) == nil
 	if !passwordMatches {
-		klog.InfoS("authentication failed: wrong password")
+		plog.Debug("authentication failed: wrong password")
 		respondWithUnauthenticated(rsp)
 		return
 	}
@@ -141,32 +142,32 @@ func (w *webhook) ServeHTTP(rsp http.ResponseWriter, req *http.Request) {
 		groupsCSVReader := csv.NewReader(groupsBuf)
 		groups, err = groupsCSVReader.Read()
 		if err != nil {
-			klog.InfoS("could not read groups", "err", err)
+			plog.Debug("could not read groups", "err", err)
 			rsp.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		trimLeadingAndTrailingWhitespace(groups)
 	}
 
-	klog.InfoS("successful authentication")
+	plog.Debug("successful authentication")
 	respondWithAuthenticated(rsp, secret.ObjectMeta.Name, string(secret.UID), groups)
 }
 
 func getUsernameAndPasswordFromRequest(rsp http.ResponseWriter, req *http.Request) (string, string, error) {
 	if req.URL.Path != "/authenticate" {
-		klog.InfoS("received request path other than /authenticate", "path", req.URL.Path)
+		plog.Debug("received request path other than /authenticate", "path", req.URL.Path)
 		rsp.WriteHeader(http.StatusNotFound)
 		return "", "", invalidRequest
 	}
 
 	if req.Method != http.MethodPost {
-		klog.InfoS("received request method other than post", "method", req.Method)
+		plog.Debug("received request method other than post", "method", req.Method)
 		rsp.WriteHeader(http.StatusMethodNotAllowed)
 		return "", "", invalidRequest
 	}
 
 	if !headerContains(req, "Content-Type", "application/json") {
-		klog.InfoS("content type is not application/json", "Content-Type", req.Header.Values("Content-Type"))
+		plog.Debug("content type is not application/json", "Content-Type", req.Header.Values("Content-Type"))
 		rsp.WriteHeader(http.StatusUnsupportedMediaType)
 		return "", "", invalidRequest
 	}
@@ -174,39 +175,39 @@ func getUsernameAndPasswordFromRequest(rsp http.ResponseWriter, req *http.Reques
 	if !headerContains(req, "Accept", "application/json") &&
 		!headerContains(req, "Accept", "application/*") &&
 		!headerContains(req, "Accept", "*/*") {
-		klog.InfoS("client does not accept application/json", "Accept", req.Header.Values("Accept"))
+		plog.Debug("client does not accept application/json", "Accept", req.Header.Values("Accept"))
 		rsp.WriteHeader(http.StatusUnsupportedMediaType)
 		return "", "", invalidRequest
 	}
 
 	if req.Body == nil {
-		klog.InfoS("invalid nil body")
+		plog.Debug("invalid nil body")
 		rsp.WriteHeader(http.StatusBadRequest)
 		return "", "", invalidRequest
 	}
 
 	var body authenticationv1beta1.TokenReview
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		klog.InfoS("failed to decode body", "err", err)
+		plog.Debug("failed to decode body", "err", err)
 		rsp.WriteHeader(http.StatusBadRequest)
 		return "", "", invalidRequest
 	}
 
 	if body.APIVersion != authenticationv1beta1.SchemeGroupVersion.String() {
-		klog.InfoS("invalid TokenReview apiVersion", "apiVersion", body.APIVersion)
+		plog.Debug("invalid TokenReview apiVersion", "apiVersion", body.APIVersion)
 		rsp.WriteHeader(http.StatusBadRequest)
 		return "", "", invalidRequest
 	}
 
 	if body.Kind != "TokenReview" {
-		klog.InfoS("invalid TokenReview kind", "kind", body.Kind)
+		plog.Debug("invalid TokenReview kind", "kind", body.Kind)
 		rsp.WriteHeader(http.StatusBadRequest)
 		return "", "", invalidRequest
 	}
 
 	tokenSegments := strings.SplitN(body.Spec.Token, ":", 2)
 	if len(tokenSegments) != 2 {
-		klog.InfoS("bad token format in request")
+		plog.Debug("bad token format in request")
 		rsp.WriteHeader(http.StatusBadRequest)
 		return "", "", invalidRequest
 	}
@@ -247,7 +248,7 @@ func respondWithUnauthenticated(rsp http.ResponseWriter) {
 		},
 	}
 	if err := json.NewEncoder(rsp).Encode(body); err != nil {
-		klog.InfoS("could not encode response", "err", err)
+		plog.Debug("could not encode response", "err", err)
 		rsp.WriteHeader(http.StatusInternalServerError)
 	}
 }
@@ -273,24 +274,9 @@ func respondWithAuthenticated(
 		},
 	}
 	if err := json.NewEncoder(rsp).Encode(body); err != nil {
-		klog.InfoS("could not encode response", "err", err)
+		plog.Debug("could not encode response", "err", err)
 		rsp.WriteHeader(http.StatusInternalServerError)
 	}
-}
-
-func newK8sClient() (kubernetes.Interface, error) {
-	kubeConfig, err := restclient.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("could not load in-cluster configuration: %w", err)
-	}
-
-	// Connect to the core Kubernetes API.
-	kubeClient, err := kubernetes.NewForConfig(kubeConfig)
-	if err != nil {
-		return nil, fmt.Errorf("could not load in-cluster configuration: %w", err)
-	}
-
-	return kubeClient, nil
 }
 
 func startControllers(
@@ -358,21 +344,21 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kubeClient, err := newK8sClient()
+	client, err := kubeclient.New()
 	if err != nil {
 		return fmt.Errorf("cannot create k8s client: %w", err)
 	}
 
 	kubeInformers := kubeinformers.NewSharedInformerFactoryWithOptions(
-		kubeClient,
+		client.Kubernetes,
 		defaultResyncInterval,
 		kubeinformers.WithNamespace(namespace),
 	)
 
 	dynamicCertProvider := dynamiccert.New()
 
-	startControllers(ctx, dynamicCertProvider, kubeClient, kubeInformers)
-	klog.InfoS("controllers are ready")
+	startControllers(ctx, dynamicCertProvider, client.Kubernetes, kubeInformers)
+	plog.Debug("controllers are ready")
 
 	//nolint: gosec // Intentionally binding to all network interfaces.
 	l, err := net.Listen("tcp", ":8443")
@@ -385,15 +371,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot start webhook: %w", err)
 	}
-	klog.InfoS("webhook is ready", "address", l.Addr().String())
+	plog.Debug("webhook is ready", "address", l.Addr().String())
 
 	gotSignal := waitForSignal()
-	klog.InfoS("webhook exiting", "signal", gotSignal)
+	plog.Debug("webhook exiting", "signal", gotSignal)
 
 	return nil
 }
 
 func main() {
+	// Hardcode the logging level to debug, since this is a test app and it is very helpful to have
+	// verbose logs to debug test failures.
+	if err := plog.ValidateAndSetLogLevelGlobally(plog.LevelDebug); err != nil {
+		klog.Fatal(err)
+	}
 	if err := run(); err != nil {
 		klog.Fatal(err)
 	}

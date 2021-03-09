@@ -15,6 +15,10 @@ func Wrap(wrapped http.Handler) http.Handler {
 		h.Set("X-XSS-Protection", "1; mode=block")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-DNS-Prefetch-Control", "off")
+		h.Set("Cache-Control", "no-cache,no-store,max-age=0,must-revalidate")
+		h.Set("Pragma", "no-cache")
+		h.Set("Expires", "0")
 		wrapped.ServeHTTP(w, r)
 	})
 }

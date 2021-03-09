@@ -19,23 +19,28 @@ local_resource(
 )
 
 #####################################################################################################
-# Dex
+# Test IDP (Dex + cert generation + squid proxy)
 #
 
-# Render the Dex installation manifest using ytt.
-k8s_yaml(local(['ytt','--file', '../../../test/deploy/dex']))
+# Render the IDP installation manifest using ytt.
+k8s_yaml(local(['ytt',
+    '--file', '../../../test/deploy/dex',
+    '--data-value-yaml', 'supervisor_redirect_uris=[https://pinniped-supervisor-clusterip.supervisor.svc.cluster.local/some/path/callback]',
+]))
 # Tell tilt to watch all of those files for changes.
 watch_file('../../../test/deploy/dex')
 
-# Collect all the deployed Dex resources under a "dex" resource tab.
-k8s_resource(
-    workload='dex', # this is the deployment name
-    objects=[
-        # these are the objects that would otherwise appear in the "uncategorized" tab in the tilt UI
-        'dex:namespace',
-        'dex-config:configmap',
-   ],
-)
+k8s_resource(objects=['dex:namespace'], new_name='dex-ns')
+k8s_resource(workload='cert-issuer', resource_deps=['dex-ns'], objects=[
+    'cert-issuer:serviceaccount',
+    'cert-issuer:role',
+    'cert-issuer:rolebinding',
+])
+k8s_resource(workload='proxy', resource_deps=['dex-ns'])
+k8s_resource(workload='dex', resource_deps=['dex-ns', 'cert-issuer'], objects=[
+    'dex-config:configmap',
+])
+
 
 #####################################################################################################
 # Local-user-authenticator app
@@ -55,6 +60,8 @@ k8s_yaml(local([
     '--file', '../../../deploy/local-user-authenticator',
     '--data-value', 'image_repo=image/local-user-auth',
     '--data-value', 'image_tag=tilt-dev',
+    '--data-value-yaml', 'run_as_user=0',
+    '--data-value-yaml', 'run_as_group=0',
 ]))
 # Tell tilt to watch all of those files for changes.
 watch_file('../../../deploy/local-user-authenticator')
@@ -95,12 +102,16 @@ k8s_yaml(local([
     '--data-value', 'namespace=supervisor',
     '--data-value', 'image_repo=image/supervisor',
     '--data-value', 'image_tag=tilt-dev',
+    '--data-value', 'log_level=debug',
     '--data-value-yaml', 'replicas=1',
     '--data-value-yaml', 'service_http_nodeport_port=80',
     '--data-value-yaml', 'service_http_nodeport_nodeport=31234',
     '--data-value-yaml', 'service_https_nodeport_port=443',
     '--data-value-yaml', 'service_https_nodeport_nodeport=31243',
+    '--data-value-yaml', 'service_https_clusterip_port=443',
     '--data-value-yaml', 'custom_labels={mySupervisorCustomLabelName: mySupervisorCustomLabelValue}',
+    '--data-value-yaml', 'run_as_user=0',
+    '--data-value-yaml', 'run_as_group=0',
 ]))
 # Tell tilt to watch all of those files for changes.
 watch_file('../../../deploy/supervisor')
@@ -111,7 +122,8 @@ k8s_resource(
     new_name='supervisor', # this is the name that will appear in the tilt UI
     objects=[
         # these are the objects that would otherwise appear in the "uncategorized" tab in the tilt UI
-        'oidcproviders.config.supervisor.pinniped.dev:customresourcedefinition',
+        'federationdomains.config.supervisor.pinniped.dev:customresourcedefinition',
+        'oidcidentityproviders.idp.supervisor.pinniped.dev:customresourcedefinition',
         'pinniped-supervisor-static-config:configmap',
         'supervisor:namespace',
         'pinniped-supervisor:role',
@@ -140,10 +152,13 @@ k8s_yaml(local([
     '--data-value namespace=concierge ' +
     '--data-value image_repo=image/concierge ' +
     '--data-value image_tag=tilt-dev ' +
-    '--data-value kube_cert_agent_image=debian:10.6-slim ' +
-    '--data-value discovery_url=$(TERM=dumb kubectl cluster-info | awk \'/Kubernetes master/ {print $NF}\') ' +
+    '--data-value kube_cert_agent_image=debian:10.8-slim ' +
+    '--data-value discovery_url=$(TERM=dumb kubectl cluster-info | awk \'/master|control plane/ {print $NF}\') ' +
+    '--data-value log_level=debug ' +
     '--data-value-yaml replicas=1 ' +
-    '--data-value-yaml "custom_labels={myConciergeCustomLabelName: myConciergeCustomLabelValue}"'
+    '--data-value-yaml "custom_labels={myConciergeCustomLabelName: myConciergeCustomLabelValue}" ' +
+    '--data-value-yaml run_as_user=0 ' +
+    '--data-value-yaml run_as_group=0',
 ]))
 # Tell tilt to watch all of those files for changes.
 watch_file('../../../deploy/concierge')
@@ -183,6 +198,6 @@ k8s_resource(
 local_resource(
   'test-env',
   'TILT_MODE=yes ../../prepare-for-integration-tests.sh',
-  resource_deps=['local-user-auth', 'concierge', 'supervisor'],
+  resource_deps=['local-user-auth', 'concierge', 'supervisor', 'dex', 'proxy'],
   deps=['../../prepare-for-integration-tests.sh'],
 )

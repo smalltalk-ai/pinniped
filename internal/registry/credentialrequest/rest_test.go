@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package credentialrequest
@@ -17,21 +17,46 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/klog/v2"
 
-	loginapi "go.pinniped.dev/generated/1.19/apis/concierge/login"
+	loginapi "go.pinniped.dev/generated/latest/apis/concierge/login"
 	"go.pinniped.dev/internal/mocks/credentialrequestmocks"
 	"go.pinniped.dev/internal/testutil"
 )
 
 func TestNew(t *testing.T) {
-	r := NewREST(nil, nil)
+	r := NewREST(nil, nil, schema.GroupResource{Group: "bears", Resource: "panda"})
 	require.NotNil(t, r)
-	require.True(t, r.NamespaceScoped())
+	require.False(t, r.NamespaceScoped())
+	require.Equal(t, []string{"pinniped"}, r.Categories())
 	require.IsType(t, &loginapi.TokenCredentialRequest{}, r.New())
+	require.IsType(t, &loginapi.TokenCredentialRequestList{}, r.NewList())
+
+	ctx := context.Background()
+
+	// check the simple invariants of our no-op list
+	list, err := r.List(ctx, nil)
+	require.NoError(t, err)
+	require.NotNil(t, list)
+	require.IsType(t, &loginapi.TokenCredentialRequestList{}, list)
+	require.Equal(t, "0", list.(*loginapi.TokenCredentialRequestList).ResourceVersion)
+	require.NotNil(t, list.(*loginapi.TokenCredentialRequestList).Items)
+	require.Len(t, list.(*loginapi.TokenCredentialRequestList).Items, 0)
+
+	// make sure we can turn lists into tables if needed
+	table, err := r.ConvertToTable(ctx, list, nil)
+	require.NoError(t, err)
+	require.NotNil(t, table)
+	require.Equal(t, "0", table.ResourceVersion)
+	require.Nil(t, table.Rows)
+
+	// exercise group resource - force error by passing a runtime.Object that does not have an embedded object meta
+	_, err = r.ConvertToTable(ctx, &metav1.APIGroup{}, nil)
+	require.Error(t, err, "the resource panda.bears does not support being converted to a Table")
 }
 
 func TestCreate(t *testing.T) {
@@ -69,10 +94,10 @@ func TestCreate(t *testing.T) {
 					CommonName:   "test-user",
 					Organization: []string{"test-group-1", "test-group-2"}},
 				[]string{},
-				1*time.Hour,
+				5*time.Minute,
 			).Return([]byte("test-cert"), []byte("test-key"), nil)
 
-			storage := NewREST(requestAuthenticator, issuer)
+			storage := NewREST(requestAuthenticator, issuer, schema.GroupResource{})
 
 			response, err := callCreate(context.Background(), storage, req)
 
@@ -81,7 +106,7 @@ func TestCreate(t *testing.T) {
 
 			expires := response.(*loginapi.TokenCredentialRequest).Status.Credential.ExpirationTimestamp
 			r.NotNil(expires)
-			r.InDelta(time.Now().Add(1*time.Hour).Unix(), expires.Unix(), 5)
+			r.InDelta(time.Now().Add(5*time.Minute).Unix(), expires.Unix(), 5)
 			response.(*loginapi.TokenCredentialRequest).Status.Credential.ExpirationTimestamp = metav1.Time{}
 
 			r.Equal(response, &loginapi.TokenCredentialRequest{
@@ -111,7 +136,7 @@ func TestCreate(t *testing.T) {
 				IssuePEM(gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(nil, nil, fmt.Errorf("some certificate authority error"))
 
-			storage := NewREST(requestAuthenticator, issuer)
+			storage := NewREST(requestAuthenticator, issuer, schema.GroupResource{})
 
 			response, err := callCreate(context.Background(), storage, req)
 			requireSuccessfulResponseWithAuthenticationFailureMessage(t, err, response)
@@ -124,7 +149,7 @@ func TestCreate(t *testing.T) {
 			requestAuthenticator := credentialrequestmocks.NewMockTokenCredentialRequestAuthenticator(ctrl)
 			requestAuthenticator.EXPECT().AuthenticateTokenCredentialRequest(gomock.Any(), req).Return(nil, nil)
 
-			storage := NewREST(requestAuthenticator, nil)
+			storage := NewREST(requestAuthenticator, nil, schema.GroupResource{})
 
 			response, err := callCreate(context.Background(), storage, req)
 
@@ -139,12 +164,12 @@ func TestCreate(t *testing.T) {
 			requestAuthenticator.EXPECT().AuthenticateTokenCredentialRequest(gomock.Any(), req).
 				Return(nil, errors.New("some webhook error"))
 
-			storage := NewREST(requestAuthenticator, nil)
+			storage := NewREST(requestAuthenticator, nil, schema.GroupResource{})
 
 			response, err := callCreate(context.Background(), storage, req)
 
 			requireSuccessfulResponseWithAuthenticationFailureMessage(t, err, response)
-			requireOneLogStatement(r, logger, `"failure" failureType:webhook authentication,msg:some webhook error`)
+			requireOneLogStatement(r, logger, `"failure" failureType:token authentication,msg:some webhook error`)
 		})
 
 		it("CreateSucceedsWithAnUnauthenticatedStatusWhenWebhookReturnsAnEmptyUsername", func() {
@@ -154,7 +179,7 @@ func TestCreate(t *testing.T) {
 			requestAuthenticator.EXPECT().AuthenticateTokenCredentialRequest(gomock.Any(), req).
 				Return(&user.DefaultInfo{Name: ""}, nil)
 
-			storage := NewREST(requestAuthenticator, nil)
+			storage := NewREST(requestAuthenticator, nil, schema.GroupResource{})
 
 			response, err := callCreate(context.Background(), storage, req)
 
@@ -164,7 +189,7 @@ func TestCreate(t *testing.T) {
 
 		it("CreateFailsWhenGivenTheWrongInputType", func() {
 			notACredentialRequest := runtime.Unknown{}
-			response, err := NewREST(nil, nil).Create(
+			response, err := NewREST(nil, nil, schema.GroupResource{}).Create(
 				genericapirequest.NewContext(),
 				&notACredentialRequest,
 				rest.ValidateAllObjectFunc,
@@ -175,7 +200,7 @@ func TestCreate(t *testing.T) {
 		})
 
 		it("CreateFailsWhenTokenValueIsEmptyInRequest", func() {
-			storage := NewREST(nil, nil)
+			storage := NewREST(nil, nil, schema.GroupResource{})
 			response, err := callCreate(context.Background(), storage, credentialRequest(loginapi.TokenCredentialRequestSpec{
 				Token: "",
 			}))
@@ -186,7 +211,7 @@ func TestCreate(t *testing.T) {
 		})
 
 		it("CreateFailsWhenValidationFails", func() {
-			storage := NewREST(nil, nil)
+			storage := NewREST(nil, nil, schema.GroupResource{})
 			response, err := storage.Create(
 				context.Background(),
 				validCredentialRequest(),
@@ -206,7 +231,7 @@ func TestCreate(t *testing.T) {
 			requestAuthenticator.EXPECT().AuthenticateTokenCredentialRequest(gomock.Any(), req.DeepCopy()).
 				Return(&user.DefaultInfo{Name: "test-user"}, nil)
 
-			storage := NewREST(requestAuthenticator, successfulIssuer(ctrl))
+			storage := NewREST(requestAuthenticator, successfulIssuer(ctrl), schema.GroupResource{})
 			response, err := storage.Create(
 				context.Background(),
 				req,
@@ -227,7 +252,7 @@ func TestCreate(t *testing.T) {
 			requestAuthenticator.EXPECT().AuthenticateTokenCredentialRequest(gomock.Any(), req.DeepCopy()).
 				Return(&user.DefaultInfo{Name: "test-user"}, nil)
 
-			storage := NewREST(requestAuthenticator, successfulIssuer(ctrl))
+			storage := NewREST(requestAuthenticator, successfulIssuer(ctrl), schema.GroupResource{})
 			validationFunctionWasCalled := false
 			var validationFunctionSawTokenValue string
 			response, err := storage.Create(
@@ -247,7 +272,7 @@ func TestCreate(t *testing.T) {
 		})
 
 		it("CreateFailsWhenRequestOptionsDryRunIsNotEmpty", func() {
-			response, err := NewREST(nil, nil).Create(
+			response, err := NewREST(nil, nil, schema.GroupResource{}).Create(
 				genericapirequest.NewContext(),
 				validCredentialRequest(),
 				rest.ValidateAllObjectFunc,
@@ -258,6 +283,17 @@ func TestCreate(t *testing.T) {
 			requireAPIError(t, response, err, apierrors.IsInvalid,
 				`.pinniped.dev "request name" is invalid: dryRun: Unsupported value: []string{"some dry run flag"}`)
 			requireOneLogStatement(r, logger, `"failure" failureType:request validation,msg:dryRun not supported`)
+		})
+
+		it("CreateFailsWhenNamespaceIsNotEmpty", func() {
+			response, err := NewREST(nil, nil, schema.GroupResource{}).Create(
+				genericapirequest.WithNamespace(genericapirequest.NewContext(), "some-ns"),
+				validCredentialRequest(),
+				rest.ValidateAllObjectFunc,
+				&metav1.CreateOptions{})
+
+			requireAPIError(t, response, err, apierrors.IsBadRequest, `namespace is not allowed on TokenCredentialRequest: some-ns`)
+			requireOneLogStatement(r, logger, `"failure" failureType:request validation,msg:namespace is not allowed`)
 		})
 	}, spec.Sequential())
 }

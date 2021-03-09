@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package kubecertagent
@@ -22,8 +22,8 @@ import (
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	coretesting "k8s.io/client-go/testing"
 
-	configv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/config/v1alpha1"
-	pinnipedfake "go.pinniped.dev/generated/1.19/client/concierge/clientset/versioned/fake"
+	configv1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/config/v1alpha1"
+	pinnipedfake "go.pinniped.dev/generated/latest/client/concierge/clientset/versioned/fake"
 	"go.pinniped.dev/internal/controllerlib"
 	"go.pinniped.dev/internal/testutil"
 )
@@ -83,7 +83,6 @@ func TestCreaterControllerSync(t *testing.T) {
 	spec.Run(t, "CreaterControllerSync", func(t *testing.T, when spec.G, it spec.S) {
 		const kubeSystemNamespace = "kube-system"
 		const agentPodNamespace = "agent-pod-namespace"
-		const credentialIssuerNamespaceName = "ci-namespace-name"
 		const credentialIssuerResourceName = "ci-resource-name"
 
 		var r *require.Assertions
@@ -119,8 +118,7 @@ func TestCreaterControllerSync(t *testing.T) {
 					},
 				},
 				&CredentialIssuerLocationConfig{
-					Namespace: credentialIssuerNamespaceName,
-					Name:      credentialIssuerResourceName,
+					Name: credentialIssuerResourceName,
 				},
 				map[string]string{
 					"myLabelKey1": "myLabelValue1",
@@ -307,15 +305,10 @@ func TestCreaterControllerSync(t *testing.T) {
 							initialCredentialIssuer = &configv1alpha1.CredentialIssuer{
 								TypeMeta: metav1.TypeMeta{},
 								ObjectMeta: metav1.ObjectMeta{
-									Name:      credentialIssuerResourceName,
-									Namespace: credentialIssuerNamespaceName,
+									Name: credentialIssuerResourceName,
 								},
 								Status: configv1alpha1.CredentialIssuerStatus{
 									Strategies: []configv1alpha1.CredentialIssuerStrategy{},
-									KubeConfigInfo: &configv1alpha1.CredentialIssuerKubeConfigInfo{
-										Server:                   "some-server",
-										CertificateAuthorityData: "some-ca-value",
-									},
 								},
 							}
 							r.NoError(pinnipedAPIClient.Tracker().Add(initialCredentialIssuer))
@@ -335,14 +328,13 @@ func TestCreaterControllerSync(t *testing.T) {
 									LastUpdateTime: metav1.NewTime(frozenNow),
 								},
 							}
-							expectedGetAction := coretesting.NewGetAction(
+							expectedGetAction := coretesting.NewRootGetAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
 								credentialIssuerResourceName,
 							)
-							expectedUpdateAction := coretesting.NewUpdateAction(
+							expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
+								"status",
 								expectedCredentialIssuer,
 							)
 
@@ -380,11 +372,21 @@ func TestCreaterControllerSync(t *testing.T) {
 							startInformersAndController()
 							err := controllerlib.TestSync(t, subject, *syncContext)
 
+							expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
+								TypeMeta: metav1.TypeMeta{},
+								ObjectMeta: metav1.ObjectMeta{
+									Name: credentialIssuerResourceName,
+									Labels: map[string]string{
+										"myLabelKey1": "myLabelValue1",
+										"myLabelKey2": "myLabelValue2",
+									},
+								},
+							}
+
 							expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
 								TypeMeta: metav1.TypeMeta{},
 								ObjectMeta: metav1.ObjectMeta{
-									Name:      credentialIssuerResourceName,
-									Namespace: credentialIssuerNamespaceName,
+									Name: credentialIssuerResourceName,
 									Labels: map[string]string{
 										"myLabelKey1": "myLabelValue1",
 										"myLabelKey2": "myLabelValue2",
@@ -402,14 +404,17 @@ func TestCreaterControllerSync(t *testing.T) {
 									},
 								},
 							}
-							expectedGetAction := coretesting.NewGetAction(
+							expectedGetAction := coretesting.NewRootGetAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
 								credentialIssuerResourceName,
 							)
-							expectedCreateAction := coretesting.NewCreateAction(
+							expectedCreateAction := coretesting.NewRootCreateAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
+								expectedCreateCredentialIssuer,
+							)
+							expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(
+								credentialIssuerGVR,
+								"status",
 								expectedCredentialIssuer,
 							)
 
@@ -418,6 +423,7 @@ func TestCreaterControllerSync(t *testing.T) {
 								[]coretesting.Action{
 									expectedGetAction,
 									expectedCreateAction,
+									expectedUpdateAction,
 								},
 								pinnipedAPIClient.Actions(),
 							)
@@ -435,15 +441,10 @@ func TestCreaterControllerSync(t *testing.T) {
 					initialCredentialIssuer = &configv1alpha1.CredentialIssuer{
 						TypeMeta: metav1.TypeMeta{},
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      credentialIssuerResourceName,
-							Namespace: credentialIssuerNamespaceName,
+							Name: credentialIssuerResourceName,
 						},
 						Status: configv1alpha1.CredentialIssuerStatus{
 							Strategies: []configv1alpha1.CredentialIssuerStrategy{},
-							KubeConfigInfo: &configv1alpha1.CredentialIssuerKubeConfigInfo{
-								Server:                   "some-server",
-								CertificateAuthorityData: "some-ca-value",
-							},
 						},
 					}
 					r.NoError(pinnipedAPIClient.Tracker().Add(initialCredentialIssuer))
@@ -463,14 +464,13 @@ func TestCreaterControllerSync(t *testing.T) {
 							LastUpdateTime: metav1.NewTime(frozenNow),
 						},
 					}
-					expectedGetAction := coretesting.NewGetAction(
+					expectedGetAction := coretesting.NewRootGetAction(
 						credentialIssuerGVR,
-						credentialIssuerNamespaceName,
 						credentialIssuerResourceName,
 					)
-					expectedUpdateAction := coretesting.NewUpdateAction(
+					expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(
 						credentialIssuerGVR,
-						credentialIssuerNamespaceName,
+						"status",
 						expectedCredentialIssuer,
 					)
 
@@ -525,11 +525,21 @@ func TestCreaterControllerSync(t *testing.T) {
 					startInformersAndController()
 					err := controllerlib.TestSync(t, subject, *syncContext)
 
+					expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
+						TypeMeta: metav1.TypeMeta{},
+						ObjectMeta: metav1.ObjectMeta{
+							Name: credentialIssuerResourceName,
+							Labels: map[string]string{
+								"myLabelKey1": "myLabelValue1",
+								"myLabelKey2": "myLabelValue2",
+							},
+						},
+					}
+
 					expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
 						TypeMeta: metav1.TypeMeta{},
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      credentialIssuerResourceName,
-							Namespace: credentialIssuerNamespaceName,
+							Name: credentialIssuerResourceName,
 							Labels: map[string]string{
 								"myLabelKey1": "myLabelValue1",
 								"myLabelKey2": "myLabelValue2",
@@ -547,14 +557,17 @@ func TestCreaterControllerSync(t *testing.T) {
 							},
 						},
 					}
-					expectedGetAction := coretesting.NewGetAction(
+					expectedGetAction := coretesting.NewRootGetAction(
 						credentialIssuerGVR,
-						credentialIssuerNamespaceName,
 						credentialIssuerResourceName,
 					)
-					expectedCreateAction := coretesting.NewCreateAction(
+					expectedCreateAction := coretesting.NewRootCreateAction(
 						credentialIssuerGVR,
-						credentialIssuerNamespaceName,
+						expectedCreateCredentialIssuer,
+					)
+					expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(
+						credentialIssuerGVR,
+						"status",
 						expectedCredentialIssuer,
 					)
 
@@ -563,6 +576,7 @@ func TestCreaterControllerSync(t *testing.T) {
 						[]coretesting.Action{
 							expectedGetAction,
 							expectedCreateAction,
+							expectedUpdateAction,
 						},
 						pinnipedAPIClient.Actions(),
 					)

@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package kubecertagent
@@ -22,8 +22,8 @@ import (
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	coretesting "k8s.io/client-go/testing"
 
-	configv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/config/v1alpha1"
-	pinnipedfake "go.pinniped.dev/generated/1.19/client/concierge/clientset/versioned/fake"
+	configv1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/config/v1alpha1"
+	pinnipedfake "go.pinniped.dev/generated/latest/client/concierge/clientset/versioned/fake"
 	"go.pinniped.dev/internal/controllerlib"
 	"go.pinniped.dev/internal/testutil"
 )
@@ -41,6 +41,7 @@ func TestAnnotaterControllerFilter(t *testing.T) {
 		) {
 			_ = NewAnnotaterController(
 				agentPodConfig,
+				nil, // credentialIssuerLabels, shouldn't matter
 				nil, // credentialIssuerLocationConfig, shouldn't matter
 				nil, // clock, shouldn't matter
 				nil, // k8sClient, shouldn't matter
@@ -59,7 +60,6 @@ func TestAnnotaterControllerSync(t *testing.T) {
 		const agentPodNamespace = "agent-pod-namespace"
 		const defaultKubeControllerManagerClusterSigningCertFileFlagValue = "/etc/kubernetes/ca/ca.pem"
 		const defaultKubeControllerManagerClusterSigningKeyFileFlagValue = "/etc/kubernetes/ca/ca.key"
-		const credentialIssuerNamespaceName = "ci-namespace-name"
 		const credentialIssuerResourceName = "ci-resource-name"
 
 		const (
@@ -86,6 +86,7 @@ func TestAnnotaterControllerSync(t *testing.T) {
 		var podsGVR schema.GroupVersionResource
 		var credentialIssuerGVR schema.GroupVersionResource
 		var frozenNow time.Time
+		var credentialIssuerLabels map[string]string
 
 		// Defer starting the informers until the last possible moment so that the
 		// nested Before's can keep adding things to the informer caches.
@@ -102,9 +103,9 @@ func TestAnnotaterControllerSync(t *testing.T) {
 					},
 				},
 				&CredentialIssuerLocationConfig{
-					Namespace: credentialIssuerNamespaceName,
-					Name:      credentialIssuerResourceName,
+					Name: credentialIssuerResourceName,
 				},
+				credentialIssuerLabels,
 				clock.NewFakeClock(frozenNow),
 				kubeAPIClient,
 				pinnipedAPIClient,
@@ -236,15 +237,10 @@ func TestAnnotaterControllerSync(t *testing.T) {
 							initialCredentialIssuer = &configv1alpha1.CredentialIssuer{
 								TypeMeta: metav1.TypeMeta{},
 								ObjectMeta: metav1.ObjectMeta{
-									Name:      credentialIssuerResourceName,
-									Namespace: credentialIssuerNamespaceName,
+									Name: credentialIssuerResourceName,
 								},
 								Status: configv1alpha1.CredentialIssuerStatus{
 									Strategies: []configv1alpha1.CredentialIssuerStrategy{},
-									KubeConfigInfo: &configv1alpha1.CredentialIssuerKubeConfigInfo{
-										Server:                   "some-server",
-										CertificateAuthorityData: "some-ca-value",
-									},
 								},
 							}
 							r.NoError(pinnipedAPIClient.Tracker().Add(initialCredentialIssuer))
@@ -264,14 +260,13 @@ func TestAnnotaterControllerSync(t *testing.T) {
 									LastUpdateTime: metav1.NewTime(frozenNow),
 								},
 							}
-							expectedGetAction := coretesting.NewGetAction(
+							expectedGetAction := coretesting.NewRootGetAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
 								credentialIssuerResourceName,
 							)
-							expectedUpdateAction := coretesting.NewUpdateAction(
+							expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
+								"status",
 								expectedCredentialIssuer,
 							)
 
@@ -305,15 +300,27 @@ func TestAnnotaterControllerSync(t *testing.T) {
 					})
 
 					when("there is not already a CredentialIssuer", func() {
+						it.Before(func() {
+							credentialIssuerLabels = map[string]string{"foo": "bar"}
+						})
+
 						it("creates the CredentialIssuer status with the error", func() {
 							startInformersAndController()
 							err := controllerlib.TestSync(t, subject, *syncContext)
 
+							expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
+								TypeMeta: metav1.TypeMeta{},
+								ObjectMeta: metav1.ObjectMeta{
+									Name:   credentialIssuerResourceName,
+									Labels: map[string]string{"foo": "bar"},
+								},
+							}
+
 							expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
 								TypeMeta: metav1.TypeMeta{},
 								ObjectMeta: metav1.ObjectMeta{
-									Name:      credentialIssuerResourceName,
-									Namespace: credentialIssuerNamespaceName,
+									Name:   credentialIssuerResourceName,
+									Labels: map[string]string{"foo": "bar"},
 								},
 								Status: configv1alpha1.CredentialIssuerStatus{
 									Strategies: []configv1alpha1.CredentialIssuerStrategy{
@@ -327,14 +334,17 @@ func TestAnnotaterControllerSync(t *testing.T) {
 									},
 								},
 							}
-							expectedGetAction := coretesting.NewGetAction(
+							expectedGetAction := coretesting.NewRootGetAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
 								credentialIssuerResourceName,
 							)
-							expectedCreateAction := coretesting.NewCreateAction(
+							expectedCreateAction := coretesting.NewRootCreateAction(
 								credentialIssuerGVR,
-								credentialIssuerNamespaceName,
+								expectedCreateCredentialIssuer,
+							)
+							expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(
+								credentialIssuerGVR,
+								"status",
 								expectedCredentialIssuer,
 							)
 
@@ -343,6 +353,7 @@ func TestAnnotaterControllerSync(t *testing.T) {
 								[]coretesting.Action{
 									expectedGetAction,
 									expectedCreateAction,
+									expectedUpdateAction,
 								},
 								pinnipedAPIClient.Actions(),
 							)

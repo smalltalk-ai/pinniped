@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package library
@@ -6,14 +6,13 @@ package library
 import (
 	"io/ioutil"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
 
-	auth1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/authentication/v1alpha1"
+	auth1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/authentication/v1alpha1"
 )
 
 type Capability string
@@ -38,6 +37,8 @@ type TestEnv struct {
 	SupervisorHTTPSAddress         string                               `json:"supervisorHttpsAddress"`
 	SupervisorHTTPSIngressAddress  string                               `json:"supervisorHttpsIngressAddress"`
 	SupervisorHTTPSIngressCABundle string                               `json:"supervisorHttpsIngressCABundle"`
+	Proxy                          string                               `json:"proxy"`
+	APIGroupSuffix                 string                               `json:"apiGroupSuffix"`
 
 	TestUser struct {
 		Token            string   `json:"token"`
@@ -45,13 +46,30 @@ type TestEnv struct {
 		ExpectedGroups   []string `json:"expectedGroups"`
 	} `json:"testUser"`
 
-	OIDCUpstream struct {
-		Issuer        string `json:"issuer"`
-		ClientID      string `json:"clientID"`
-		LocalhostPort int    `json:"localhostPort"`
-		Username      string `json:"username"`
-		Password      string `json:"password"`
-	} `json:"oidcUpstream"`
+	CLITestUpstream        TestOIDCUpstream `json:"cliOIDCUpstream"`
+	SupervisorTestUpstream TestOIDCUpstream `json:"supervisorOIDCUpstream"`
+}
+
+type TestOIDCUpstream struct {
+	Issuer           string   `json:"issuer"`
+	CABundle         string   `json:"caBundle"`
+	AdditionalScopes []string `json:"additionalScopes"`
+	UsernameClaim    string   `json:"usernameClaim"`
+	GroupsClaim      string   `json:"groupsClaim"`
+	ClientID         string   `json:"clientID"`
+	ClientSecret     string   `json:"clientSecret"`
+	CallbackURL      string   `json:"callback"`
+	Username         string   `json:"username"`
+	Password         string   `json:"password"`
+	ExpectedGroups   []string `json:"expectedGroups"`
+}
+
+// ProxyEnv returns a set of environment variable strings (e.g., to combine with os.Environ()) which set up the configured test HTTP proxy.
+func (e *TestEnv) ProxyEnv() []string {
+	if e.Proxy == "" {
+		return nil
+	}
+	return []string{"http_proxy=" + e.Proxy, "https_proxy=" + e.Proxy, "no_proxy=127.0.0.1"}
 }
 
 // IntegrationEnv gets the integration test environment from OS environment variables. This
@@ -87,6 +105,24 @@ func needEnv(t *testing.T, key string) string {
 	value := os.Getenv(key)
 	require.NotEmptyf(t, value, "must specify %s env var for integration tests", key)
 	return value
+}
+
+func wantEnv(key, dephault string) string {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return dephault
+	}
+	return value
+}
+
+func filterEmpty(ss []string) []string {
+	filtered := []string{}
+	for _, s := range ss {
+		if len(s) != 0 {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 func loadEnvVars(t *testing.T, result *TestEnv) {
@@ -126,12 +162,31 @@ func loadEnvVars(t *testing.T, result *TestEnv) {
 	require.NoErrorf(t, err, "PINNIPED_TEST_SUPERVISOR_CUSTOM_LABELS must be a YAML map of string to string")
 	result.SupervisorCustomLabels = supervisorCustomLabels
 	require.NotEmpty(t, result.SupervisorCustomLabels, "PINNIPED_TEST_SUPERVISOR_CUSTOM_LABELS cannot be empty")
+	result.Proxy = os.Getenv("PINNIPED_TEST_PROXY")
+	result.APIGroupSuffix = wantEnv("PINNIPED_TEST_API_GROUP_SUFFIX", "pinniped.dev")
 
-	result.OIDCUpstream.Issuer = needEnv(t, "PINNIPED_TEST_CLI_OIDC_ISSUER")
-	result.OIDCUpstream.ClientID = needEnv(t, "PINNIPED_TEST_CLI_OIDC_CLIENT_ID")
-	result.OIDCUpstream.LocalhostPort, _ = strconv.Atoi(needEnv(t, "PINNIPED_TEST_CLI_OIDC_LOCALHOST_PORT"))
-	result.OIDCUpstream.Username = needEnv(t, "PINNIPED_TEST_CLI_OIDC_USERNAME")
-	result.OIDCUpstream.Password = needEnv(t, "PINNIPED_TEST_CLI_OIDC_PASSWORD")
+	result.CLITestUpstream = TestOIDCUpstream{
+		Issuer:      needEnv(t, "PINNIPED_TEST_CLI_OIDC_ISSUER"),
+		CABundle:    os.Getenv("PINNIPED_TEST_CLI_OIDC_ISSUER_CA_BUNDLE"),
+		ClientID:    needEnv(t, "PINNIPED_TEST_CLI_OIDC_CLIENT_ID"),
+		CallbackURL: needEnv(t, "PINNIPED_TEST_CLI_OIDC_CALLBACK_URL"),
+		Username:    needEnv(t, "PINNIPED_TEST_CLI_OIDC_USERNAME"),
+		Password:    needEnv(t, "PINNIPED_TEST_CLI_OIDC_PASSWORD"),
+	}
+
+	result.SupervisorTestUpstream = TestOIDCUpstream{
+		Issuer:           needEnv(t, "PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_ISSUER"),
+		CABundle:         os.Getenv("PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_ISSUER_CA_BUNDLE"),
+		AdditionalScopes: strings.Fields(os.Getenv("PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_ADDITIONAL_SCOPES")),
+		UsernameClaim:    os.Getenv("PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_USERNAME_CLAIM"),
+		GroupsClaim:      os.Getenv("PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_GROUPS_CLAIM"),
+		ClientID:         needEnv(t, "PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_CLIENT_ID"),
+		ClientSecret:     needEnv(t, "PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_CLIENT_SECRET"),
+		CallbackURL:      needEnv(t, "PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_CALLBACK_URL"),
+		Username:         needEnv(t, "PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_USERNAME"),
+		Password:         needEnv(t, "PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_PASSWORD"),
+		ExpectedGroups:   filterEmpty(strings.Split(strings.ReplaceAll(os.Getenv("PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_EXPECTED_GROUPS"), " ", ""), ",")),
+	}
 }
 
 func (e *TestEnv) HasCapability(cap Capability) bool {
