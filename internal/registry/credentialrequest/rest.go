@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package credentialrequest provides REST functionality for the CredentialRequest resource.
@@ -11,25 +11,21 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/authentication/user"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/utils/trace"
 
-	loginapi "go.pinniped.dev/generated/1.19/apis/concierge/login"
+	loginapi "go.pinniped.dev/generated/latest/apis/concierge/login"
 )
 
 // clientCertificateTTL is the TTL for short-lived client certificates returned by this API.
-const clientCertificateTTL = 1 * time.Hour
-
-type Storage interface {
-	rest.Creater
-	rest.NamespaceScopedStrategy
-	rest.Scoper
-	rest.Storage
-}
+const clientCertificateTTL = 5 * time.Minute
 
 type CertIssuer interface {
 	IssuePEM(subject pkix.Name, dnsNames []string, ttl time.Duration) ([]byte, []byte, error)
@@ -39,24 +35,57 @@ type TokenCredentialRequestAuthenticator interface {
 	AuthenticateTokenCredentialRequest(ctx context.Context, req *loginapi.TokenCredentialRequest) (user.Info, error)
 }
 
-func NewREST(authenticator TokenCredentialRequestAuthenticator, issuer CertIssuer) *REST {
+func NewREST(authenticator TokenCredentialRequestAuthenticator, issuer CertIssuer, resource schema.GroupResource) *REST {
 	return &REST{
-		authenticator: authenticator,
-		issuer:        issuer,
+		authenticator:  authenticator,
+		issuer:         issuer,
+		tableConvertor: rest.NewDefaultTableConvertor(resource),
 	}
 }
 
 type REST struct {
-	authenticator TokenCredentialRequestAuthenticator
-	issuer        CertIssuer
+	authenticator  TokenCredentialRequestAuthenticator
+	issuer         CertIssuer
+	tableConvertor rest.TableConvertor
 }
+
+// Assert that our *REST implements all the optional interfaces that we expect it to implement.
+var _ interface {
+	rest.Creater
+	rest.NamespaceScopedStrategy
+	rest.Scoper
+	rest.Storage
+	rest.CategoriesProvider
+	rest.Lister
+} = (*REST)(nil)
 
 func (*REST) New() runtime.Object {
 	return &loginapi.TokenCredentialRequest{}
 }
 
+func (*REST) NewList() runtime.Object {
+	return &loginapi.TokenCredentialRequestList{}
+}
+
+func (*REST) List(_ context.Context, _ *metainternalversion.ListOptions) (runtime.Object, error) {
+	return &loginapi.TokenCredentialRequestList{
+		ListMeta: metav1.ListMeta{
+			ResourceVersion: "0", // this resource version means "from the API server cache"
+		},
+		Items: []loginapi.TokenCredentialRequest{}, // avoid sending nil items list
+	}, nil
+}
+
+func (r *REST) ConvertToTable(ctx context.Context, obj runtime.Object, tableOptions runtime.Object) (*metav1.Table, error) {
+	return r.tableConvertor.ConvertToTable(ctx, obj, tableOptions)
+}
+
 func (*REST) NamespaceScoped() bool {
-	return true
+	return false
+}
+
+func (*REST) Categories() []string {
+	return []string{"pinniped"}
 }
 
 func (r *REST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
@@ -73,7 +102,7 @@ func (r *REST) Create(ctx context.Context, obj runtime.Object, createValidation 
 
 	user, err := r.authenticator.AuthenticateTokenCredentialRequest(ctx, credentialRequest)
 	if err != nil {
-		traceFailureWithError(t, "webhook authentication", err)
+		traceFailureWithError(t, "token authentication", err)
 		return failureResponse(), nil
 	}
 	if user == nil || user.GetName() == "" {
@@ -127,6 +156,11 @@ func validateRequest(ctx context.Context, obj runtime.Object, createValidation r
 			errs := field.ErrorList{field.NotSupported(field.NewPath("dryRun"), options.DryRun, nil)}
 			return nil, apierrors.NewInvalid(loginapi.Kind(credentialRequest.Kind), credentialRequest.Name, errs)
 		}
+	}
+
+	if namespace := genericapirequest.NamespaceValue(ctx); len(namespace) != 0 {
+		traceValidationFailure(t, "namespace is not allowed")
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("namespace is not allowed on TokenCredentialRequest: %v", namespace))
 	}
 
 	// let dynamic admission webhooks have a chance to validate (but not mutate) as well

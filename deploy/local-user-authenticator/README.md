@@ -15,17 +15,17 @@ User accounts can be created and edited dynamically using `kubectl` commands (se
 ## Installing the Latest Version with Default Options
 
 ```bash
-kubectl apply -f https://github.com/vmware-tanzu/pinniped/releases/latest/download/install-local-user-authenticator.yaml
+kubectl apply -f https://get.pinniped.dev/latest/install-local-user-authenticator.yaml
 ```
 
-## Installing an Older Version with Default Options
+## Installing a Specific Version with Default Options
 
 Choose your preferred [release](https://github.com/vmware-tanzu/pinniped/releases) version number
 and use it to replace the version number in the URL below.
 
 ```bash
-# Replace v0.2.0 with your preferred version in the URL below
-kubectl apply -f https://github.com/vmware-tanzu/pinniped/releases/download/v0.2.0/install-local-user-authenticator.yaml
+# Replace v0.4.1 with your preferred version in the URL below
+kubectl apply -f https://get.pinniped.dev/v0.4.1/install-local-user-authenticator.yaml
 ```
 
 ## Installing with Custom Options
@@ -79,7 +79,7 @@ kubectl get secret local-user-authenticator-tls-serving-certificate --namespace 
 
 When installing Pinniped on the same cluster, configure local-user-authenticator as an Identity Provider for Pinniped
 using the webhook URL `https://local-user-authenticator.local-user-authenticator.svc/authenticate`
-along with the CA bundle fetched by the above command. See [doc/demo.md](../../doc/demo.md) for an example.
+along with the CA bundle fetched by the above command. See [demo](https://pinniped.dev/docs/demo/) for an example.
 
 ## Optional: Manually Testing the Webhook Endpoint After Installing
 

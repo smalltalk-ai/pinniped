@@ -1,15 +1,19 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package concierge
+
+import "go.pinniped.dev/internal/plog"
 
 // Config contains knobs to setup an instance of the Pinniped Concierge.
 type Config struct {
 	DiscoveryInfo       DiscoveryInfoSpec `json:"discovery"`
 	APIConfig           APIConfigSpec     `json:"api"`
+	APIGroupSuffix      *string           `json:"apiGroupSuffix,omitempty"`
 	NamesConfig         NamesConfigSpec   `json:"names"`
 	KubeCertAgentConfig KubeCertAgentSpec `json:"kubeCertAgent"`
 	Labels              map[string]string `json:"labels"`
+	LogLevel            plog.LogLevel     `json:"logLevel"`
 }
 
 // DiscoveryInfoSpec contains configuration knobs specific to

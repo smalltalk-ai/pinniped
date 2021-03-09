@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package kubecertagent provides controllers that ensure a set of pods (the kube-cert-agent), is
@@ -10,7 +10,6 @@
 package kubecertagent
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
@@ -23,11 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/clock"
 	corev1informers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/klog/v2"
 
-	configv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/config/v1alpha1"
-	pinnipedclientset "go.pinniped.dev/generated/1.19/client/concierge/clientset/versioned"
-	"go.pinniped.dev/internal/controller/issuerconfig"
+	configv1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/config/v1alpha1"
+	"go.pinniped.dev/internal/plog"
 )
 
 const (
@@ -74,9 +71,6 @@ type AgentPodConfig struct {
 }
 
 type CredentialIssuerLocationConfig struct {
-	// The namespace in which the CredentialIssuer should be created/updated.
-	Namespace string
-
 	// The resource name for the CredentialIssuer to be created/updated.
 	Name string
 }
@@ -257,13 +251,13 @@ func findControllerManagerPodForSpecificAgentPod(
 ) (*corev1.Pod, error) {
 	name, ok := agentPod.Annotations[controllerManagerNameAnnotationKey]
 	if !ok {
-		klog.InfoS("agent pod missing parent name annotation", "pod", agentPod.Name)
+		plog.Debug("agent pod missing parent name annotation", "pod", agentPod.Name)
 		return nil, nil
 	}
 
 	uid, ok := agentPod.Annotations[controllerManagerUIDAnnotationKey]
 	if !ok {
-		klog.InfoS("agent pod missing parent uid annotation", "pod", agentPod.Name)
+		plog.Debug("agent pod missing parent uid annotation", "pod", agentPod.Name)
 		return nil, nil
 	}
 
@@ -281,43 +275,6 @@ func findControllerManagerPodForSpecificAgentPod(
 	}
 
 	return maybeControllerManagerPod, nil
-}
-
-func createOrUpdateCredentialIssuer(ctx context.Context,
-	ciConfig CredentialIssuerLocationConfig,
-	credentialIssuerLabels map[string]string,
-	clock clock.Clock,
-	pinnipedAPIClient pinnipedclientset.Interface,
-	err error,
-) error {
-	return issuerconfig.CreateOrUpdateCredentialIssuer(
-		ctx,
-		ciConfig.Namespace,
-		ciConfig.Name,
-		credentialIssuerLabels,
-		pinnipedAPIClient,
-		func(configToUpdate *configv1alpha1.CredentialIssuer) {
-			var strategyResult configv1alpha1.CredentialIssuerStrategy
-			if err == nil {
-				strategyResult = strategySuccess(clock)
-			} else {
-				strategyResult = strategyError(clock, err)
-			}
-			configToUpdate.Status.Strategies = []configv1alpha1.CredentialIssuerStrategy{
-				strategyResult,
-			}
-		},
-	)
-}
-
-func strategySuccess(clock clock.Clock) configv1alpha1.CredentialIssuerStrategy {
-	return configv1alpha1.CredentialIssuerStrategy{
-		Type:           configv1alpha1.KubeClusterSigningCertificateStrategyType,
-		Status:         configv1alpha1.SuccessStrategyStatus,
-		Reason:         configv1alpha1.FetchedKeyStrategyReason,
-		Message:        "Key was fetched successfully",
-		LastUpdateTime: metav1.NewTime(clock.Now()),
-	}
 }
 
 func strategyError(clock clock.Clock, err error) configv1alpha1.CredentialIssuerStrategy {

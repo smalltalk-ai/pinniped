@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package integration
@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/diff"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"go.pinniped.dev/test/library"
 )
@@ -27,10 +28,12 @@ const (
 func TestKubeCertAgent(t *testing.T) {
 	env := library.IntegrationEnv(t).WithCapability(library.ClusterSigningKeyIsAvailable)
 
+	library.AssertNoRestartsDuringTest(t, env.ConciergeNamespace, "")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	kubeClient := library.NewClientset(t)
+	kubeClient := library.NewKubernetesClientset(t)
 
 	// Get the current number of kube-cert-agent pods.
 	//
@@ -88,6 +91,9 @@ func TestKubeCertAgent(t *testing.T) {
 	}
 
 	t.Run("reconcile on update", func(t *testing.T) {
+		// Ensure that the next test will start from a known state.
+		defer ensureKubeCertAgentSteadyState(t, agentPodsReconciled)
+
 		// Update the image of the first pod. The controller should see it, and flip it back.
 		//
 		// Note that we update the toleration field here because it is the only field, currently, that
@@ -107,6 +113,9 @@ func TestKubeCertAgent(t *testing.T) {
 	})
 
 	t.Run("reconcile on delete", func(t *testing.T) {
+		// Ensure that the next test will start from a known state.
+		defer ensureKubeCertAgentSteadyState(t, agentPodsReconciled)
+
 		// Delete the first pod. The controller should see it, and flip it back.
 		err = kubeClient.
 			CoreV1().
@@ -118,6 +127,21 @@ func TestKubeCertAgent(t *testing.T) {
 		assert.Eventually(t, agentPodsReconciled, 10*time.Second, 250*time.Millisecond)
 		require.NoError(t, err)
 	})
+}
+
+func ensureKubeCertAgentSteadyState(t *testing.T, agentPodsReconciled func() bool) {
+	t.Helper()
+
+	const wantSteadyStateSnapshots = 3
+	var steadyStateSnapshots int
+	require.NoError(t, wait.Poll(250*time.Millisecond, 30*time.Second, func() (bool, error) {
+		if agentPodsReconciled() {
+			steadyStateSnapshots++
+		} else {
+			steadyStateSnapshots = 0
+		}
+		return steadyStateSnapshots == wantSteadyStateSnapshots, nil
+	}))
 }
 
 func sortPods(pods *corev1.PodList) {

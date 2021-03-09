@@ -10,8 +10,12 @@
         padding: 0px 0px 10px 0px;
         p {
             margin-bottom: 20px;
+            font-size: 18px;
             color: $white;
         }
+    }
+    h2 {
+        font-size: 36px;
     }
     &.homepage {
         background-image: url(/img/hero-image.png);
@@ -65,6 +69,7 @@
         padding: 35px 20px;
         p {
             margin: 0px;
+            font-size: 16px;
             &.strong {
                 color: $darkgrey;
             }
@@ -130,7 +135,8 @@
         color: $black;
     }
     p.strong {
-        color: $black;
+        color: #1B3951;
+        font-size: 16px;
     }
 }
 
@@ -138,6 +144,9 @@
     background-color: $navyblue;
     h2, h3, p {
         color: $white;
+    }
+    p {
+        font-size: 16px;
     }
     a {
         color: $white;
@@ -158,11 +167,10 @@
                 margin: 0px;
                 &.name {
                     font-size: 16px;
-                    font-weight: 600;
+                    font-family: $metropolis-medium;
                 }
                 &.position {
                     font-size: 14px;
-                    font-weight: 300;
                 }
             }
         }
@@ -219,6 +227,9 @@
     &.landing {
         background-color: #fff;
         margin-top: -90px;
+        h3 a {
+            font-size: 16px;
+        }
         .pagination {
             margin: 30px auto 50px auto;
             ul {
@@ -264,24 +275,60 @@
             font-size: 16px;
         }
         ul {
+            list-style-type: disc;
+            padding-left: 20px;
+            li:first-child {
+                margin-top: 10px;
+            }
             li {
+                list-style-type: unset;
+                display: list-item;
+                margin-bottom: 10px;
+                font-size: 16px;
                 color: $darkgrey;
-                &:first-child {
-                    margin-top: 10px;
-                }
+                list-style-image: url(/img/arrow.svg);
             }
         }
         ol {
+            li:first-child {
+                margin-top: 10px;
+            }
             li {
+                list-style-type: decimal;
+                display: list-item;
+                margin-bottom: 10px;
                 font-size: 16px;
                 color: $darkgrey;
-                &:first-child {
-                    margin-top: 10px;
-                }
             }
         }
         code {
+            background-color: $white;
             color: $darkgrey;
+            border: 2px solid #EFEFEF;
+            padding: 2px 8px;
+            .c1 {
+                color: $blue;
+                font-style: italic;
+            }
+            .se {
+                color: #ff0000;
+            }
+        }
+        pre {
+            white-space: pre-wrap;
+            white-space: -moz-pre-wrap;
+            white-space: -pre-wrap;
+            white-space: -o-pre-wrap;
+            word-wrap: break-word;
+            code {
+                display: block;
+                border: 15px solid #EFEFEF;
+                padding: 15px;
+                margin-bottom: 30px;
+            }
+        }
+        img {
+            max-width: 100%;
         }
         strong {
             font-family: $metropolis-medium;
@@ -294,6 +341,7 @@
     color: $black;
     p {
         color: $black;
+        font-size: 16px;
     }
     .left-side {
         width: 50%;
@@ -371,10 +419,19 @@
     .side-nav {
         width: 25%;
         float: left;
-        position: relative;
+        @include breakpoint(small-medium) {
+            width: 100%;
+            float: none;
+        }
+
         ul {
             padding-left: 0px;
             margin-bottom: 35px;
+            ul {
+                padding-left: 15px;
+                margin-top: 10px;
+                margin-bottom: 15px;
+            }
             li {
                 display: list-item;
                 margin-bottom: 15px;
@@ -401,12 +458,19 @@
     .docs-content {
         width: 75%;
         float: right;
-        &.full {
+        @include breakpoint(small-medium) {
             width: 100%;
+            float: none;
+        }
+        a {
+            font-size: 16px;
         }
         ul {
             list-style-type: disc;
             padding-left: 20px;
+            li:first-child {
+                margin-top: 10px;
+            }
             li {
                 list-style-type: unset;
                 display: list-item;
@@ -424,12 +488,15 @@
             }
         }
         ol {
+            li:first-child {
+                margin-top: 10px;
+            }
             li {
+                list-style-type: decimal;
+                display: list-item;
+                margin-bottom: 10px;
                 font-size: 16px;
                 color: $darkgrey;
-                &:first-child {
-                    margin-top: 10px;
-                }
             }
         }
         code {
@@ -457,77 +524,37 @@
                 padding: 15px;
                 margin-bottom: 30px;
                 overflow-x: auto;
+                font-size: 14px;
             }
         }
         img {
             max-width: 100%;
         }
-        @include breakpoint(large) {
-            width: 58%;
-            padding-right: 20px;
-        }
-        @include breakpoint(extra-large) {
-            width: 75%;
-            padding-right: 20px;
+        strong {
+            font-family: $metropolis-medium;
         }
     }
-    .right-nav {
-        width: 20%;
-        float: right;
-        margin: -30px -30px 0px 0px;
-        .right-nav-content {
-            background-color: #EFEFEF;
-            padding: 30px 30px 30px 20px;
-            margin-right: -20px;
-            position: sticky;
-            top: 0;
+    .danger {
+        .danger-icon {
+            float: left;
+            padding: 40px;
+            width: 24px;
+            height: 24px;
         }
-        .buttons {
-            margin-top: 0px;
-            li {
-                margin-bottom: 0px;
-                padding: 8px 0px;
-                display: inline-block;
-                &:first-of-type {
-                    border-right: 1px solid #ddd;
-                    padding-right: 5px;
-                }
-                a {
-                    text-transform: uppercase;
-                    font-size: 14px;
-                    img {
-                        vertical-align: middle;
-                        width: 22px;
-                    }
-                }
-            }
+        padding: 10px;
+        font-family: $metropolis-light-italic;
+    }
+
+    .button {
+        white-space: nowrap;
+        a {
+            font-size: 14px;
         }
-        h4 {
-            font-size: 16px;
-        }
-        ul {
-            padding-left: 0px;
-            margin-bottom: 0px;
-            li {
-                display: block;
-                padding-right: 0px;
-                margin-bottom: 7px;
-                a {
-                    font-family: $metropolis-light;
-                    font-size: 14px;
-                }
-                ul {
-                    margin-top: 7px;
-                    padding-inline-start: 14px;
-                }
-            }
-        }
-        .sticky {
-            position: fixed;
-            top: 0;
-        }
-        @include breakpoint(small-medium) {
-            display: none;
+    }
+
+    table {
+        td {
+            padding: 10px 30px;
         }
     }
 }

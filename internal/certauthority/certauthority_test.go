@@ -94,7 +94,7 @@ func TestNew(t *testing.T) {
 	caCert, err := x509.ParseCertificate(got.caCertBytes)
 	require.NoError(t, err)
 	require.Equal(t, "Test CA", caCert.Subject.CommonName)
-	require.WithinDuration(t, now.Add(-5*time.Minute), caCert.NotBefore, 10*time.Second)
+	require.WithinDuration(t, now.Add(-10*time.Second), caCert.NotBefore, 10*time.Second)
 	require.WithinDuration(t, now.Add(time.Minute), caCert.NotAfter, 10*time.Second)
 }
 
@@ -149,7 +149,7 @@ func TestNewInternal(t *testing.T) {
 			},
 			wantCommonName: "Test CA",
 			wantNotAfter:   now.Add(time.Minute),
-			wantNotBefore:  now.Add(-5 * time.Minute),
+			wantNotBefore:  now.Add(-10 * time.Second),
 		},
 	}
 	for _, tt := range tests {
@@ -179,6 +179,16 @@ func TestBundle(t *testing.T) {
 		ca := CA{caCertBytes: []byte{1, 2, 3, 4, 5, 6, 7, 8}}
 		got := ca.Bundle()
 		require.Equal(t, "-----BEGIN CERTIFICATE-----\nAQIDBAUGBwg=\n-----END CERTIFICATE-----\n", string(got))
+	})
+}
+
+func TestPool(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		ca, err := New(pkix.Name{CommonName: "test"}, 1*time.Hour)
+		require.NoError(t, err)
+
+		got := ca.Pool()
+		require.Len(t, got.Subjects(), 1)
 	})
 }
 

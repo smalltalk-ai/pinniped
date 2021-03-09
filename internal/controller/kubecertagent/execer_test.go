@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package kubecertagent
@@ -23,10 +23,11 @@ import (
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	coretesting "k8s.io/client-go/testing"
 
-	configv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/config/v1alpha1"
-	pinnipedfake "go.pinniped.dev/generated/1.19/client/concierge/clientset/versioned/fake"
+	configv1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/config/v1alpha1"
+	pinnipedfake "go.pinniped.dev/generated/latest/client/concierge/clientset/versioned/fake"
 	"go.pinniped.dev/internal/controllerlib"
 	"go.pinniped.dev/internal/dynamiccert"
+	"go.pinniped.dev/internal/here"
 	"go.pinniped.dev/internal/testutil"
 )
 
@@ -41,17 +42,21 @@ func TestExecerControllerOptions(t *testing.T) {
 		it.Before(func() {
 			r = require.New(t)
 			observableWithInformerOption = testutil.NewObservableWithInformerOption()
-			agentPodsInformer := kubeinformers.NewSharedInformerFactory(nil, 0).Core().V1().Pods()
+			informerFactory := kubeinformers.NewSharedInformerFactory(nil, 0)
+			agentPodsInformer := informerFactory.Core().V1().Pods()
+			configMapsInformer := informerFactory.Core().V1().ConfigMaps()
 			_ = NewExecerController(
 				&CredentialIssuerLocationConfig{
-					Namespace: "ignored by this test",
-					Name:      "ignored by this test",
+					Name: "ignored by this test",
 				},
+				nil, // credentialIssuerLabels, not needed for this test
+				nil, // discoveryURLOverride, not needed for this test
 				nil, // dynamicCertProvider, not needed for this test
 				nil, // podCommandExecutor, not needed for this test
 				nil, // pinnipedAPIClient, not needed for this test
 				nil, // clock, not needed for this test
 				agentPodsInformer,
+				configMapsInformer,
 				observableWithInformerOption.WithInformer,
 			)
 			agentPodInformerFilter = observableWithInformerOption.GetFilterForInformer(agentPodsInformer)
@@ -136,7 +141,6 @@ func TestManagerControllerSync(t *testing.T) {
 		const fakeKeyPath = "/some/key/path"
 		const defaultDynamicCertProviderCert = "initial-cert"
 		const defaultDynamicCertProviderKey = "initial-key"
-		const credentialIssuerNamespaceName = "ci-namespace-name"
 		const credentialIssuerResourceName = "ci-resource-name"
 
 		var r *require.Assertions
@@ -146,9 +150,11 @@ func TestManagerControllerSync(t *testing.T) {
 		var timeoutContextCancel context.CancelFunc
 		var syncContext *controllerlib.Context
 		var pinnipedAPIClient *pinnipedfake.Clientset
-		var agentPodInformer kubeinformers.SharedInformerFactory
-		var agentPodInformerClient *kubernetesfake.Clientset
+		var kubeInformerFactory kubeinformers.SharedInformerFactory
+		var kubeClientset *kubernetesfake.Clientset
 		var fakeExecutor *fakePodExecutor
+		var credentialIssuerLabels map[string]string
+		var discoveryURLOverride *string
 		var dynamicCertProvider dynamiccert.Provider
 		var fakeCertPEM, fakeKeyPEM string
 		var credentialIssuerGVR schema.GroupVersionResource
@@ -160,14 +166,16 @@ func TestManagerControllerSync(t *testing.T) {
 			// Set this at the last second to allow for injection of server override.
 			subject = NewExecerController(
 				&CredentialIssuerLocationConfig{
-					Namespace: credentialIssuerNamespaceName,
-					Name:      credentialIssuerResourceName,
+					Name: credentialIssuerResourceName,
 				},
+				credentialIssuerLabels,
+				discoveryURLOverride,
 				dynamicCertProvider,
 				fakeExecutor,
 				pinnipedAPIClient,
 				clock.NewFakeClock(frozenNow),
-				agentPodInformer.Core().V1().Pods(),
+				kubeInformerFactory.Core().V1().Pods(),
+				kubeInformerFactory.Core().V1().ConfigMaps(),
 				controllerlib.WithInformer,
 			)
 
@@ -182,7 +190,7 @@ func TestManagerControllerSync(t *testing.T) {
 			}
 
 			// Must start informers before calling TestRunSynchronously()
-			agentPodInformer.Start(timeoutContext.Done())
+			kubeInformerFactory.Start(timeoutContext.Done())
 			controllerlib.TestRunSynchronously(t, subject)
 		}
 
@@ -222,8 +230,8 @@ func TestManagerControllerSync(t *testing.T) {
 
 			timeoutContext, timeoutContextCancel = context.WithTimeout(context.Background(), time.Second*3)
 			pinnipedAPIClient = pinnipedfake.NewSimpleClientset()
-			agentPodInformerClient = kubernetesfake.NewSimpleClientset()
-			agentPodInformer = kubeinformers.NewSharedInformerFactory(agentPodInformerClient, 0)
+			kubeClientset = kubernetesfake.NewSimpleClientset()
+			kubeInformerFactory = kubeinformers.NewSharedInformerFactory(kubeClientset, 0)
 			fakeExecutor = &fakePodExecutor{r: r}
 			frozenNow = time.Date(2020, time.September, 23, 7, 42, 0, 0, time.Local)
 			dynamicCertProvider = dynamiccert.New()
@@ -256,7 +264,7 @@ func TestManagerControllerSync(t *testing.T) {
 						Namespace: agentPodNamespace,
 					},
 				}
-				r.NoError(agentPodInformerClient.Tracker().Add(unrelatedPod))
+				r.NoError(kubeClientset.Tracker().Add(unrelatedPod))
 				startInformersAndController()
 			})
 
@@ -269,7 +277,7 @@ func TestManagerControllerSync(t *testing.T) {
 		when("there is an agent pod, as determined by its labels matching the agent pod template labels, which is not yet annotated by the annotater controller", func() {
 			it.Before(func() {
 				agentPod := newAgentPod(agentPodName, false)
-				r.NoError(agentPodInformerClient.Tracker().Add(agentPod))
+				r.NoError(kubeClientset.Tracker().Add(agentPod))
 				startInformersAndController()
 			})
 
@@ -283,7 +291,7 @@ func TestManagerControllerSync(t *testing.T) {
 			it.Before(func() {
 				agentPod := newAgentPod(agentPodName, true)
 				agentPod.Status.Phase = corev1.PodPending // not Running
-				r.NoError(agentPodInformerClient.Tracker().Add(agentPod))
+				r.NoError(kubeClientset.Tracker().Add(agentPod))
 				startInformersAndController()
 			})
 
@@ -298,8 +306,8 @@ func TestManagerControllerSync(t *testing.T) {
 				targetAgentPod := newAgentPod(agentPodName, true)
 				targetAgentPod.Status.Phase = corev1.PodRunning
 				anotherAgentPod := newAgentPod("some-other-agent-pod-which-is-not-the-context-of-this-sync", true)
-				r.NoError(agentPodInformerClient.Tracker().Add(targetAgentPod))
-				r.NoError(agentPodInformerClient.Tracker().Add(anotherAgentPod))
+				r.NoError(kubeClientset.Tracker().Add(targetAgentPod))
+				r.NoError(kubeClientset.Tracker().Add(anotherAgentPod))
 			})
 
 			when("the resulting pod execs will succeed", func() {
@@ -307,113 +315,259 @@ func TestManagerControllerSync(t *testing.T) {
 					fakeExecutor.resultsToReturn = []string{fakeCertPEM, fakeKeyPEM}
 				})
 
-				it("execs to the agent pod to get the keys and updates the dynamic certificates provider with the new certs", func() {
-					startInformersAndController()
-					r.NoError(controllerlib.TestSync(t, subject, *syncContext))
+				when("the cluster-info ConfigMap is not found", func() {
+					it("returns an error and updates the strategy with an error", func() {
+						startInformersAndController()
+						r.EqualError(controllerlib.TestSync(t, subject, *syncContext), `failed to get cluster-info configmap: configmap "cluster-info" not found`)
 
-					r.Equal(2, fakeExecutor.callCount)
-
-					r.Equal(agentPodNamespace, fakeExecutor.calledWithPodNamespace[0])
-					r.Equal(agentPodName, fakeExecutor.calledWithPodName[0])
-					r.Equal([]string{"cat", fakeCertPath}, fakeExecutor.calledWithCommandAndArgs[0])
-
-					r.Equal(agentPodNamespace, fakeExecutor.calledWithPodNamespace[1])
-					r.Equal(agentPodName, fakeExecutor.calledWithPodName[1])
-					r.Equal([]string{"cat", fakeKeyPath}, fakeExecutor.calledWithCommandAndArgs[1])
-
-					actualCertPEM, actualKeyPEM := dynamicCertProvider.CurrentCertKeyContent()
-					r.Equal(fakeCertPEM, string(actualCertPEM))
-					r.Equal(fakeKeyPEM, string(actualKeyPEM))
-				})
-
-				when("there is already a CredentialIssuer", func() {
-					var initialCredentialIssuer *configv1alpha1.CredentialIssuer
-
-					it.Before(func() {
-						initialCredentialIssuer = &configv1alpha1.CredentialIssuer{
+						expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
 							TypeMeta: metav1.TypeMeta{},
 							ObjectMeta: metav1.ObjectMeta{
-								Name:      credentialIssuerResourceName,
-								Namespace: credentialIssuerNamespaceName,
-							},
-							Status: configv1alpha1.CredentialIssuerStatus{
-								Strategies: []configv1alpha1.CredentialIssuerStrategy{},
-								KubeConfigInfo: &configv1alpha1.CredentialIssuerKubeConfigInfo{
-									Server:                   "some-server",
-									CertificateAuthorityData: "some-ca-value",
-								},
+								Name: credentialIssuerResourceName,
 							},
 						}
-						r.NoError(pinnipedAPIClient.Tracker().Add(initialCredentialIssuer))
-					})
-
-					it("also updates the the existing CredentialIssuer status field", func() {
-						startInformersAndController()
-						r.NoError(controllerlib.TestSync(t, subject, *syncContext))
-
-						expectedCredentialIssuer := initialCredentialIssuer.DeepCopy()
-						expectedCredentialIssuer.Status.Strategies = []configv1alpha1.CredentialIssuerStrategy{
-							{
-								Type:           configv1alpha1.KubeClusterSigningCertificateStrategyType,
-								Status:         configv1alpha1.SuccessStrategyStatus,
-								Reason:         configv1alpha1.FetchedKeyStrategyReason,
-								Message:        "Key was fetched successfully",
-								LastUpdateTime: metav1.NewTime(frozenNow),
-							},
-						}
-						expectedGetAction := coretesting.NewGetAction(credentialIssuerGVR, credentialIssuerNamespaceName, credentialIssuerResourceName)
-						expectedCreateAction := coretesting.NewUpdateAction(credentialIssuerGVR, credentialIssuerNamespaceName, expectedCredentialIssuer)
-						r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction}, pinnipedAPIClient.Actions())
-					})
-
-					when("updating the CredentialIssuer fails", func() {
-						it.Before(func() {
-							pinnipedAPIClient.PrependReactor(
-								"update",
-								"credentialissuers",
-								func(_ coretesting.Action) (bool, runtime.Object, error) {
-									return true, nil, errors.New("some update error")
-								},
-							)
-						})
-
-						it("returns an error", func() {
-							startInformersAndController()
-							err := controllerlib.TestSync(t, subject, *syncContext)
-							r.EqualError(err, "could not create or update credentialissuer: some update error")
-						})
-					})
-				})
-
-				when("there is not already a CredentialIssuer", func() {
-					it.Before(func() {
-						startInformersAndController()
-					})
-
-					it("also creates the the CredentialIssuer with the appropriate status field", func() {
-						r.NoError(controllerlib.TestSync(t, subject, *syncContext))
 
 						expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
 							TypeMeta: metav1.TypeMeta{},
 							ObjectMeta: metav1.ObjectMeta{
-								Name:      credentialIssuerResourceName,
-								Namespace: credentialIssuerNamespaceName,
+								Name: credentialIssuerResourceName,
 							},
 							Status: configv1alpha1.CredentialIssuerStatus{
 								Strategies: []configv1alpha1.CredentialIssuerStrategy{
 									{
 										Type:           configv1alpha1.KubeClusterSigningCertificateStrategyType,
-										Status:         configv1alpha1.SuccessStrategyStatus,
-										Reason:         configv1alpha1.FetchedKeyStrategyReason,
-										Message:        "Key was fetched successfully",
+										Status:         configv1alpha1.ErrorStrategyStatus,
+										Reason:         configv1alpha1.CouldNotGetClusterInfoStrategyReason,
+										Message:        `failed to get cluster-info configmap: configmap "cluster-info" not found`,
 										LastUpdateTime: metav1.NewTime(frozenNow),
 									},
 								},
 							},
 						}
-						expectedGetAction := coretesting.NewGetAction(credentialIssuerGVR, credentialIssuerNamespaceName, credentialIssuerResourceName)
-						expectedCreateAction := coretesting.NewCreateAction(credentialIssuerGVR, credentialIssuerNamespaceName, expectedCredentialIssuer)
-						r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction}, pinnipedAPIClient.Actions())
+						expectedGetAction := coretesting.NewRootGetAction(credentialIssuerGVR, credentialIssuerResourceName)
+						expectedCreateAction := coretesting.NewRootCreateAction(credentialIssuerGVR, expectedCreateCredentialIssuer)
+						expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(credentialIssuerGVR, "status", expectedCredentialIssuer)
+						r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction, expectedUpdateAction}, pinnipedAPIClient.Actions())
+					})
+				})
+
+				when("the cluster-info ConfigMap is missing a key", func() {
+					it.Before(func() {
+						r.NoError(kubeClientset.Tracker().Add(&corev1.ConfigMap{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: ClusterInfoNamespace,
+								Name:      clusterInfoName,
+							},
+							Data: map[string]string{"uninteresting-key": "uninteresting-value"},
+						}))
+					})
+					it("returns an error", func() {
+						startInformersAndController()
+						r.EqualError(controllerlib.TestSync(t, subject, *syncContext), `failed to get kubeconfig key from cluster-info configmap`)
+					})
+				})
+
+				when("the cluster-info ConfigMap is contains invalid YAML", func() {
+					it.Before(func() {
+						r.NoError(kubeClientset.Tracker().Add(&corev1.ConfigMap{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: ClusterInfoNamespace,
+								Name:      clusterInfoName,
+							},
+							Data: map[string]string{"kubeconfig": "invalid-yaml"},
+						}))
+					})
+					it("returns an error", func() {
+						startInformersAndController()
+						r.EqualError(controllerlib.TestSync(t, subject, *syncContext), `failed to load data from kubeconfig key in cluster-info configmap`)
+					})
+				})
+
+				when("the cluster-info ConfigMap is contains an empty list of clusters", func() {
+					it.Before(func() {
+						r.NoError(kubeClientset.Tracker().Add(&corev1.ConfigMap{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: ClusterInfoNamespace,
+								Name:      clusterInfoName,
+							},
+							Data: map[string]string{
+								"kubeconfig": here.Doc(`
+									kind: Config
+									apiVersion: v1
+									clusters: []
+									`),
+								"uninteresting-key": "uninteresting-value",
+							},
+						}))
+					})
+					it("returns an error", func() {
+						startInformersAndController()
+						r.EqualError(controllerlib.TestSync(t, subject, *syncContext), `kubeconfig in kubeconfig key in cluster-info configmap did not contain any clusters`)
+					})
+				})
+
+				when("the cluster-info ConfigMap is valid", func() {
+					it.Before(func() {
+						const caData = "c29tZS1jZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YQo=" // "some-certificate-authority-data" base64 encoded
+						const kubeServerURL = "https://some-server"
+						r.NoError(kubeClientset.Tracker().Add(&corev1.ConfigMap{
+							ObjectMeta: metav1.ObjectMeta{
+								Namespace: ClusterInfoNamespace,
+								Name:      clusterInfoName,
+							},
+							Data: map[string]string{
+								"kubeconfig": here.Docf(`
+									kind: Config
+									apiVersion: v1
+									clusters:
+									- name: ""
+									  cluster:
+										certificate-authority-data: "%s"
+										server: "%s"`,
+									caData, kubeServerURL),
+								"uninteresting-key": "uninteresting-value",
+							},
+						}))
+					})
+
+					it("execs to the agent pod to get the keys and updates the dynamic certificates provider with the new certs", func() {
+						startInformersAndController()
+						r.NoError(controllerlib.TestSync(t, subject, *syncContext))
+
+						r.Equal(2, fakeExecutor.callCount)
+
+						r.Equal(agentPodNamespace, fakeExecutor.calledWithPodNamespace[0])
+						r.Equal(agentPodName, fakeExecutor.calledWithPodName[0])
+						r.Equal([]string{"cat", fakeCertPath}, fakeExecutor.calledWithCommandAndArgs[0])
+
+						r.Equal(agentPodNamespace, fakeExecutor.calledWithPodNamespace[1])
+						r.Equal(agentPodName, fakeExecutor.calledWithPodName[1])
+						r.Equal([]string{"cat", fakeKeyPath}, fakeExecutor.calledWithCommandAndArgs[1])
+
+						actualCertPEM, actualKeyPEM := dynamicCertProvider.CurrentCertKeyContent()
+						r.Equal(fakeCertPEM, string(actualCertPEM))
+						r.Equal(fakeKeyPEM, string(actualKeyPEM))
+					})
+
+					when("there is already a CredentialIssuer", func() {
+						var initialCredentialIssuer *configv1alpha1.CredentialIssuer
+
+						it.Before(func() {
+							initialCredentialIssuer = &configv1alpha1.CredentialIssuer{
+								TypeMeta: metav1.TypeMeta{},
+								ObjectMeta: metav1.ObjectMeta{
+									Name: credentialIssuerResourceName,
+								},
+								Status: configv1alpha1.CredentialIssuerStatus{
+									Strategies: []configv1alpha1.CredentialIssuerStrategy{},
+								},
+							}
+							r.NoError(pinnipedAPIClient.Tracker().Add(initialCredentialIssuer))
+						})
+
+						it("also updates the the existing CredentialIssuer status field", func() {
+							startInformersAndController()
+							r.NoError(controllerlib.TestSync(t, subject, *syncContext))
+
+							// The first update to the CredentialIssuer will set the strategy entry
+							expectedCredentialIssuer := initialCredentialIssuer.DeepCopy()
+							expectedCredentialIssuer.Status.Strategies = []configv1alpha1.CredentialIssuerStrategy{
+								{
+									Type:           configv1alpha1.KubeClusterSigningCertificateStrategyType,
+									Status:         configv1alpha1.SuccessStrategyStatus,
+									Reason:         configv1alpha1.FetchedKeyStrategyReason,
+									Message:        "Key was fetched successfully",
+									LastUpdateTime: metav1.NewTime(frozenNow),
+									Frontend: &configv1alpha1.CredentialIssuerFrontend{
+										Type: configv1alpha1.TokenCredentialRequestAPIFrontendType,
+										TokenCredentialRequestAPIInfo: &configv1alpha1.TokenCredentialRequestAPIInfo{
+											Server:                   "https://some-server",
+											CertificateAuthorityData: "c29tZS1jZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YQo=",
+										},
+									},
+								},
+							}
+							expectedCredentialIssuer.Status.KubeConfigInfo = &configv1alpha1.CredentialIssuerKubeConfigInfo{
+								Server:                   "https://some-server",
+								CertificateAuthorityData: "c29tZS1jZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YQo=",
+							}
+							expectedGetAction := coretesting.NewRootGetAction(credentialIssuerGVR, credentialIssuerResourceName)
+							expectedCreateAction := coretesting.NewRootUpdateSubresourceAction(credentialIssuerGVR, "status", expectedCredentialIssuer)
+							r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction}, pinnipedAPIClient.Actions())
+						})
+
+						when("updating the CredentialIssuer fails", func() {
+							it.Before(func() {
+								pinnipedAPIClient.PrependReactor(
+									"update",
+									"credentialissuers",
+									func(_ coretesting.Action) (bool, runtime.Object, error) {
+										return true, nil, errors.New("some update error")
+									},
+								)
+							})
+
+							it("returns an error", func() {
+								startInformersAndController()
+								err := controllerlib.TestSync(t, subject, *syncContext)
+								r.EqualError(err, "could not create or update credentialissuer: some update error")
+							})
+						})
+					})
+
+					when("there is not already a CredentialIssuer", func() {
+						it.Before(func() {
+							server := "https://overridden-server-url.example.com"
+							discoveryURLOverride = &server
+							credentialIssuerLabels = map[string]string{"foo": "bar"}
+							startInformersAndController()
+						})
+
+						it("also creates the the CredentialIssuer with the appropriate status field and labels", func() {
+							r.NoError(controllerlib.TestSync(t, subject, *syncContext))
+
+							expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
+								TypeMeta: metav1.TypeMeta{},
+								ObjectMeta: metav1.ObjectMeta{
+									Name:   credentialIssuerResourceName,
+									Labels: map[string]string{"foo": "bar"},
+								},
+							}
+
+							expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
+								TypeMeta: metav1.TypeMeta{},
+								ObjectMeta: metav1.ObjectMeta{
+									Name:   credentialIssuerResourceName,
+									Labels: map[string]string{"foo": "bar"},
+								},
+								Status: configv1alpha1.CredentialIssuerStatus{
+									Strategies: []configv1alpha1.CredentialIssuerStrategy{
+										{
+											Type:           configv1alpha1.KubeClusterSigningCertificateStrategyType,
+											Status:         configv1alpha1.SuccessStrategyStatus,
+											Reason:         configv1alpha1.FetchedKeyStrategyReason,
+											Message:        "Key was fetched successfully",
+											LastUpdateTime: metav1.NewTime(frozenNow),
+											Frontend: &configv1alpha1.CredentialIssuerFrontend{
+												Type: configv1alpha1.TokenCredentialRequestAPIFrontendType,
+												TokenCredentialRequestAPIInfo: &configv1alpha1.TokenCredentialRequestAPIInfo{
+													Server:                   "https://overridden-server-url.example.com",
+													CertificateAuthorityData: "c29tZS1jZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YQo=",
+												},
+											},
+										},
+									},
+									KubeConfigInfo: &configv1alpha1.CredentialIssuerKubeConfigInfo{
+										Server:                   "https://overridden-server-url.example.com",
+										CertificateAuthorityData: "c29tZS1jZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YQo=",
+									},
+								},
+							}
+							expectedGetAction := coretesting.NewRootGetAction(credentialIssuerGVR, credentialIssuerResourceName)
+							expectedCreateAction := coretesting.NewRootCreateAction(credentialIssuerGVR, expectedCreateCredentialIssuer)
+							expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(credentialIssuerGVR, "status", expectedCredentialIssuer)
+							r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction, expectedUpdateAction}, pinnipedAPIClient.Actions())
+						})
 					})
 				})
 			})
@@ -436,11 +590,17 @@ func TestManagerControllerSync(t *testing.T) {
 				it("creates or updates the the CredentialIssuer status field with an error", func() {
 					r.EqualError(controllerlib.TestSync(t, subject, *syncContext), podExecErrorMessage)
 
+					expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
+						TypeMeta: metav1.TypeMeta{},
+						ObjectMeta: metav1.ObjectMeta{
+							Name: credentialIssuerResourceName,
+						},
+					}
+
 					expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
 						TypeMeta: metav1.TypeMeta{},
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      credentialIssuerResourceName,
-							Namespace: credentialIssuerNamespaceName,
+							Name: credentialIssuerResourceName,
 						},
 						Status: configv1alpha1.CredentialIssuerStatus{
 							Strategies: []configv1alpha1.CredentialIssuerStrategy{
@@ -454,9 +614,10 @@ func TestManagerControllerSync(t *testing.T) {
 							},
 						},
 					}
-					expectedGetAction := coretesting.NewGetAction(credentialIssuerGVR, credentialIssuerNamespaceName, credentialIssuerResourceName)
-					expectedCreateAction := coretesting.NewCreateAction(credentialIssuerGVR, credentialIssuerNamespaceName, expectedCredentialIssuer)
-					r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction}, pinnipedAPIClient.Actions())
+					expectedGetAction := coretesting.NewRootGetAction(credentialIssuerGVR, credentialIssuerResourceName)
+					expectedCreateAction := coretesting.NewRootCreateAction(credentialIssuerGVR, expectedCreateCredentialIssuer)
+					expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(credentialIssuerGVR, "status", expectedCredentialIssuer)
+					r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction, expectedUpdateAction}, pinnipedAPIClient.Actions())
 				})
 			})
 
@@ -478,11 +639,17 @@ func TestManagerControllerSync(t *testing.T) {
 				it("creates or updates the the CredentialIssuer status field with an error", func() {
 					r.EqualError(controllerlib.TestSync(t, subject, *syncContext), podExecErrorMessage)
 
+					expectedCreateCredentialIssuer := &configv1alpha1.CredentialIssuer{
+						TypeMeta: metav1.TypeMeta{},
+						ObjectMeta: metav1.ObjectMeta{
+							Name: credentialIssuerResourceName,
+						},
+					}
+
 					expectedCredentialIssuer := &configv1alpha1.CredentialIssuer{
 						TypeMeta: metav1.TypeMeta{},
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      credentialIssuerResourceName,
-							Namespace: credentialIssuerNamespaceName,
+							Name: credentialIssuerResourceName,
 						},
 						Status: configv1alpha1.CredentialIssuerStatus{
 							Strategies: []configv1alpha1.CredentialIssuerStrategy{
@@ -496,9 +663,10 @@ func TestManagerControllerSync(t *testing.T) {
 							},
 						},
 					}
-					expectedGetAction := coretesting.NewGetAction(credentialIssuerGVR, credentialIssuerNamespaceName, credentialIssuerResourceName)
-					expectedCreateAction := coretesting.NewCreateAction(credentialIssuerGVR, credentialIssuerNamespaceName, expectedCredentialIssuer)
-					r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction}, pinnipedAPIClient.Actions())
+					expectedGetAction := coretesting.NewRootGetAction(credentialIssuerGVR, credentialIssuerResourceName)
+					expectedCreateAction := coretesting.NewRootCreateAction(credentialIssuerGVR, expectedCreateCredentialIssuer)
+					expectedUpdateAction := coretesting.NewRootUpdateSubresourceAction(credentialIssuerGVR, "status", expectedCredentialIssuer)
+					r.Equal([]coretesting.Action{expectedGetAction, expectedCreateAction, expectedUpdateAction}, pinnipedAPIClient.Actions())
 				})
 			})
 		})

@@ -51,6 +51,7 @@ function check_dependency() {
 help=no
 skip_build=no
 clean_kind=no
+api_group_suffix="pinniped.dev" # same default as in the values.yaml ytt file
 
 while (("$#")); do
   case "$1" in
@@ -64,6 +65,16 @@ while (("$#")); do
     ;;
   -c | --clean)
     clean_kind=yes
+    shift
+    ;;
+  -g | --api-group-suffix)
+    shift
+    # If there are no more command line arguments, or there is another command line argument but it starts with a dash, then error
+    if [[ "$#" == "0" || "$1" == -* ]]; then
+      log_error "-g|--api-group-suffix requires a group name to be specified"
+      exit 1
+    fi
+    api_group_suffix=$1
     shift
     ;;
   -*)
@@ -84,6 +95,8 @@ if [[ "$help" == "yes" ]]; then
   log_note
   log_note "Flags:"
   log_note "   -h, --help:              print this usage"
+  log_note "   -c, --clean:             destroy the current kind cluster and make a new one"
+  log_note "   -g, --api-group-suffix:  deploy Pinniped with an alternate API group suffix"
   log_note "   -s, --skip-build:        reuse the most recently built image of the app instead of building"
   exit 1
 fi
@@ -123,20 +136,20 @@ if ! tilt_mode; then
     # Our kind config exposes node port 31234 as 127.0.0.1:12345, 31243 as 127.0.0.1:12344, and 31235 as 127.0.0.1:12346
     ./hack/kind-up.sh
   else
-    if ! kubectl cluster-info | grep master | grep -q 127.0.0.1; then
+    if ! kubectl cluster-info | grep -E '(master|control plane)' | grep -q 127.0.0.1; then
       log_error "Seems like your kubeconfig is not targeting a local cluster."
       log_error "Exiting to avoid accidentally running tests against a real cluster."
       exit 1
     fi
   fi
 
-  registry="docker.io"
+  registry="pinniped.local"
   repo="test/build"
   registry_repo="$registry/$repo"
   tag=$(uuidgen) # always a new tag to force K8s to reload the image on redeploy
 
   if [[ "$skip_build" == "yes" ]]; then
-    most_recent_tag=$(docker images "$repo" --format "{{.Tag}}" | head -1)
+    most_recent_tag=$(docker images "$registry/$repo" --format "{{.Tag}}" | head -1)
     if [[ -n "$most_recent_tag" ]]; then
       tag="$most_recent_tag"
       do_build=no
@@ -184,6 +197,10 @@ if ! tilt_mode; then
 
   log_note "Deploying Dex to the cluster..."
   ytt --file . >"$manifest"
+  ytt --file . \
+    --data-value-yaml "supervisor_redirect_uris=[https://pinniped-supervisor-clusterip.supervisor.svc.cluster.local/some/path/callback]" \
+    >"$manifest"
+
   kubectl apply --dry-run=client -f "$manifest" # Validate manifest schema.
   kapp deploy --yes --app dex --diff-changes --file "$manifest"
 
@@ -193,7 +210,7 @@ fi
 test_username="test-username"
 test_groups="test-group-0,test-group-1"
 set +o pipefail
-test_password="$(cat /dev/urandom | env LC_CTYPE=C tr -dc 'a-z0-9' | fold -w 32 | head -n 1)"
+test_password="$(cat /dev/urandom | env LC_ALL=C tr -dc 'a-z0-9' | fold -w 32 | head -n 1)"
 set -o pipefail
 if [[ ${#test_password} -ne 32 ]]; then
   log_error "Could not create test user's random password"
@@ -222,13 +239,16 @@ if ! tilt_mode; then
   ytt --file . \
     --data-value "app_name=$supervisor_app_name" \
     --data-value "namespace=$supervisor_namespace" \
+    --data-value "api_group_suffix=$api_group_suffix" \
     --data-value "image_repo=$registry_repo" \
     --data-value "image_tag=$tag" \
+    --data-value "log_level=debug" \
     --data-value-yaml "custom_labels=$supervisor_custom_labels" \
     --data-value-yaml 'service_http_nodeport_port=80' \
     --data-value-yaml 'service_http_nodeport_nodeport=31234' \
     --data-value-yaml 'service_https_nodeport_port=443' \
     --data-value-yaml 'service_https_nodeport_nodeport=31243' \
+    --data-value-yaml 'service_https_clusterip_port=443' \
     >"$manifest"
 
   kapp deploy --yes --app "$supervisor_app_name" --diff-changes --file "$manifest"
@@ -243,7 +263,7 @@ concierge_app_name="pinniped-concierge"
 concierge_namespace="concierge"
 webhook_url="https://local-user-authenticator.local-user-authenticator.svc/authenticate"
 webhook_ca_bundle="$(kubectl get secret local-user-authenticator-tls-serving-certificate --namespace local-user-authenticator -o 'jsonpath={.data.caCertificate}')"
-discovery_url="$(TERM=dumb kubectl cluster-info | awk '/Kubernetes master/ {print $NF}')"
+discovery_url="$(TERM=dumb kubectl cluster-info | awk '/master|control plane/ {print $NF}')"
 concierge_custom_labels="{myConciergeCustomLabelName: myConciergeCustomLabelValue}"
 
 if ! tilt_mode; then
@@ -253,6 +273,8 @@ if ! tilt_mode; then
   ytt --file . \
     --data-value "app_name=$concierge_app_name" \
     --data-value "namespace=$concierge_namespace" \
+    --data-value "api_group_suffix=$api_group_suffix" \
+    --data-value "log_level=debug" \
     --data-value-yaml "custom_labels=$concierge_custom_labels" \
     --data-value "image_repo=$registry_repo" \
     --data-value "image_tag=$tag" \
@@ -262,6 +284,11 @@ if ! tilt_mode; then
 
   popd >/dev/null
 fi
+
+#
+# Download the test CA bundle that was generated in the Dex pod.
+#
+test_ca_bundle_pem="$(kubectl get secrets -n dex certs -o go-template='{{index .data "ca.pem" | base64decode}}')"
 
 #
 # Create the environment file
@@ -284,11 +311,25 @@ export PINNIPED_TEST_SUPERVISOR_APP_NAME=${supervisor_app_name}
 export PINNIPED_TEST_SUPERVISOR_CUSTOM_LABELS='${supervisor_custom_labels}'
 export PINNIPED_TEST_SUPERVISOR_HTTP_ADDRESS="127.0.0.1:12345"
 export PINNIPED_TEST_SUPERVISOR_HTTPS_ADDRESS="localhost:12344"
-export PINNIPED_TEST_CLI_OIDC_ISSUER=http://127.0.0.1:12346/dex
+export PINNIPED_TEST_PROXY=http://127.0.0.1:12346
+export PINNIPED_TEST_CLI_OIDC_ISSUER=https://dex.dex.svc.cluster.local/dex
+export PINNIPED_TEST_CLI_OIDC_ISSUER_CA_BUNDLE="${test_ca_bundle_pem}"
 export PINNIPED_TEST_CLI_OIDC_CLIENT_ID=pinniped-cli
-export PINNIPED_TEST_CLI_OIDC_LOCALHOST_PORT=48095
+export PINNIPED_TEST_CLI_OIDC_CALLBACK_URL=http://127.0.0.1:48095/callback
 export PINNIPED_TEST_CLI_OIDC_USERNAME=pinny@example.com
 export PINNIPED_TEST_CLI_OIDC_PASSWORD=password
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_ISSUER=https://dex.dex.svc.cluster.local/dex
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_ISSUER_CA_BUNDLE="${test_ca_bundle_pem}"
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_ADDITIONAL_SCOPES=email
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_USERNAME_CLAIM=email
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_GROUPS_CLAIM=groups
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_CLIENT_ID=pinniped-supervisor
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_CLIENT_SECRET=pinniped-supervisor-secret
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_CALLBACK_URL=https://pinniped-supervisor-clusterip.supervisor.svc.cluster.local/some/path/callback
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_USERNAME=pinny@example.com
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_PASSWORD=password
+export PINNIPED_TEST_SUPERVISOR_UPSTREAM_OIDC_EXPECTED_GROUPS= # Dex's local user store does not let us configure groups.
+export PINNIPED_TEST_API_GROUP_SUFFIX='${api_group_suffix}'
 
 read -r -d '' PINNIPED_TEST_CLUSTER_CAPABILITY_YAML << PINNIPED_TEST_CLUSTER_CAPABILITY_YAML_EOF || true
 ${pinniped_cluster_capability_file_content}

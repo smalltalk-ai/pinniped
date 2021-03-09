@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package kubecertagent
@@ -14,10 +14,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
-	pinnipedclientset "go.pinniped.dev/generated/1.19/client/concierge/clientset/versioned"
+	pinnipedclientset "go.pinniped.dev/generated/latest/client/concierge/clientset/versioned"
 	"go.pinniped.dev/internal/constable"
 	pinnipedcontroller "go.pinniped.dev/internal/controller"
+	"go.pinniped.dev/internal/controller/issuerconfig"
 	"go.pinniped.dev/internal/controllerlib"
+	"go.pinniped.dev/internal/plog"
 )
 
 type createrController struct {
@@ -95,13 +97,12 @@ func (c *createrController) Sync(ctx controllerlib.Context) error {
 	if len(controllerManagerPods) == 0 {
 		// If there are no controller manager pods, we alert the user that we can't find the keypair via
 		// the CredentialIssuer.
-		return createOrUpdateCredentialIssuer(
+		return issuerconfig.UpdateStrategy(
 			ctx.Context,
-			*c.credentialIssuerLocationConfig,
+			c.credentialIssuerLocationConfig.Name,
 			c.credentialIssuerLabels,
-			c.clock,
 			c.pinnipedAPIClient,
-			constable.Error("did not find kube-controller-manager pod(s)"),
+			strategyError(c.clock, constable.Error("did not find kube-controller-manager pod(s)")),
 		)
 	}
 
@@ -118,7 +119,7 @@ func (c *createrController) Sync(ctx controllerlib.Context) error {
 		if agentPod == nil {
 			agentPod = c.agentPodConfig.newAgentPod(controllerManagerPod)
 
-			klog.InfoS(
+			plog.Debug(
 				"creating agent pod",
 				"pod",
 				klog.KObj(agentPod),
@@ -130,13 +131,12 @@ func (c *createrController) Sync(ctx controllerlib.Context) error {
 				Create(ctx.Context, agentPod, metav1.CreateOptions{})
 			if err != nil {
 				err = fmt.Errorf("cannot create agent pod: %w", err)
-				strategyResultUpdateErr := createOrUpdateCredentialIssuer(
+				strategyResultUpdateErr := issuerconfig.UpdateStrategy(
 					ctx.Context,
-					*c.credentialIssuerLocationConfig,
+					c.credentialIssuerLocationConfig.Name,
 					c.credentialIssuerLabels,
-					c.clock,
 					c.pinnipedAPIClient,
-					err,
+					strategyError(c.clock, err),
 				)
 				if strategyResultUpdateErr != nil {
 					// If the CI update fails, then we probably want to try again. This controller will get

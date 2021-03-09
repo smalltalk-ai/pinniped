@@ -1,0 +1,41 @@
+[[redirects]]
+  from = "/community"
+  to = "https://github.com/vmware-tanzu/pinniped/blob/main/CONTRIBUTING.md#meeting-with-the-maintainers"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/community/zoom"
+  to = "https://vmware.zoom.us/j/93798188973?pwd=T3pIMWxReEQvcWljNm1admRoZTFSZz09"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/community/agenda"
+  to = "https://hackmd.io/rd_kVJhjQfOvfAWzK8A3tQ?view"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/community/slack"
+  to = "https://kubernetes.slack.com/messages/pinniped"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/community/group"
+  to = "https://groups.google.com/forum/#!forum/project-pinniped"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/community/youtube"
+  to = "https://www.youtube.com/playlist?list=PL7bmigfV0EqQ8qYn8ornuJnuGvCt0belt"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+  force = true

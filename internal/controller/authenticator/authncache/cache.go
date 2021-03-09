@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package authncache implements a cache of active authenticators.
@@ -6,20 +6,20 @@ package authncache
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"sync"
 
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/klog/v2"
 
-	loginapi "go.pinniped.dev/generated/1.19/apis/concierge/login"
+	loginapi "go.pinniped.dev/generated/latest/apis/concierge/login"
+	"go.pinniped.dev/internal/constable"
+	"go.pinniped.dev/internal/plog"
 )
 
-var (
-	// ErrNoSuchAuthenticator is returned by Cache.AuthenticateTokenCredentialRequest() when the requested authenticator is not configured.
-	ErrNoSuchAuthenticator = fmt.Errorf("no such authenticator")
-)
+// ErrNoSuchAuthenticator is returned by Cache.AuthenticateTokenCredentialRequest() when the requested authenticator is not configured.
+const ErrNoSuchAuthenticator = constable.Error("no such authenticator")
 
 // Cache implements the authenticator.Token interface by multiplexing across a dynamic set of authenticators
 // loaded from authenticator resources.
@@ -28,10 +28,9 @@ type Cache struct {
 }
 
 type Key struct {
-	APIGroup  string
-	Kind      string
-	Namespace string
-	Name      string
+	APIGroup string
+	Kind     string
+	Name     string
 }
 
 type Value interface {
@@ -74,7 +73,6 @@ func (c *Cache) Keys() []Key {
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].APIGroup < result[j].APIGroup ||
 			result[i].Kind < result[j].Kind ||
-			result[i].Namespace < result[j].Namespace ||
 			result[i].Name < result[j].Name
 	})
 	return result
@@ -83,9 +81,8 @@ func (c *Cache) Keys() []Key {
 func (c *Cache) AuthenticateTokenCredentialRequest(ctx context.Context, req *loginapi.TokenCredentialRequest) (user.Info, error) {
 	// Map the incoming request to a cache key.
 	key := Key{
-		Namespace: req.Namespace,
-		Name:      req.Spec.Authenticator.Name,
-		Kind:      req.Spec.Authenticator.Kind,
+		Name: req.Spec.Authenticator.Name,
+		Kind: req.Spec.Authenticator.Kind,
 	}
 	if req.Spec.Authenticator.APIGroup != nil {
 		key.APIGroup = *req.Spec.Authenticator.APIGroup
@@ -93,6 +90,12 @@ func (c *Cache) AuthenticateTokenCredentialRequest(ctx context.Context, req *log
 
 	val := c.Get(key)
 	if val == nil {
+		plog.Debug(
+			"authenticator does not exist",
+			"authenticator", klog.KRef("", key.Name),
+			"kind", key.Kind,
+			"apiGroup", key.APIGroup,
+		)
 		return nil, ErrNoSuchAuthenticator
 	}
 

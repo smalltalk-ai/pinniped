@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package apiserver
@@ -10,42 +10,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/pkg/version"
-	"k8s.io/klog/v2"
 
-	loginapi "go.pinniped.dev/generated/1.19/apis/concierge/login"
-	loginv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/login/v1alpha1"
+	"go.pinniped.dev/internal/plog"
 	"go.pinniped.dev/internal/registry/credentialrequest"
+	"go.pinniped.dev/internal/registry/whoamirequest"
 )
-
-var (
-	//nolint: gochecknoglobals
-	scheme = runtime.NewScheme()
-	//nolint: gochecknoglobals, golint
-	Codecs = serializer.NewCodecFactory(scheme)
-)
-
-//nolint: gochecknoinits
-func init() {
-	utilruntime.Must(loginv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(loginapi.AddToScheme(scheme))
-
-	// add the options to empty v1
-	metav1.AddToGroupVersion(scheme, schema.GroupVersion{Version: "v1"})
-
-	unversioned := schema.GroupVersion{Group: "", Version: "v1"}
-	scheme.AddUnversionedTypes(unversioned,
-		&metav1.Status{},
-		&metav1.APIVersions{},
-		&metav1.APIGroupList{},
-		&metav1.APIGroup{},
-		&metav1.APIResourceList{},
-	)
-}
 
 type Config struct {
 	GenericConfig *genericapiserver.RecommendedConfig
@@ -56,6 +29,10 @@ type ExtraConfig struct {
 	Authenticator                 credentialrequest.TokenCredentialRequestAuthenticator
 	Issuer                        credentialrequest.CertIssuer
 	StartControllersPostStartHook func(ctx context.Context)
+	Scheme                        *runtime.Scheme
+	NegotiatedSerializer          runtime.NegotiatedSerializer
+	LoginConciergeGroupVersion    schema.GroupVersion
+	IdentityConciergeGroupVersion schema.GroupVersion
 }
 
 type PinnipedServer struct {
@@ -96,22 +73,40 @@ func (c completedConfig) New() (*PinnipedServer, error) {
 		GenericAPIServer: genericServer,
 	}
 
-	gvr := loginv1alpha1.SchemeGroupVersion.WithResource("tokencredentialrequests")
-	storage := credentialrequest.NewREST(c.ExtraConfig.Authenticator, c.ExtraConfig.Issuer)
-	if err := s.GenericAPIServer.InstallAPIGroup(&genericapiserver.APIGroupInfo{
-		PrioritizedVersions:          []schema.GroupVersion{gvr.GroupVersion()},
-		VersionedResourcesStorageMap: map[string]map[string]rest.Storage{gvr.Version: {gvr.Resource: storage}},
-		OptionsExternalVersion:       &schema.GroupVersion{Version: "v1"},
-		Scheme:                       scheme,
-		ParameterCodec:               metav1.ParameterCodec,
-		NegotiatedSerializer:         Codecs,
-	}); err != nil {
-		return nil, fmt.Errorf("could not install API group %s: %w", gvr.String(), err)
+	var errs []error //nolint: prealloc
+	for _, f := range []func() (schema.GroupVersionResource, rest.Storage){
+		func() (schema.GroupVersionResource, rest.Storage) {
+			tokenCredReqGVR := c.ExtraConfig.LoginConciergeGroupVersion.WithResource("tokencredentialrequests")
+			tokenCredStorage := credentialrequest.NewREST(c.ExtraConfig.Authenticator, c.ExtraConfig.Issuer, tokenCredReqGVR.GroupResource())
+			return tokenCredReqGVR, tokenCredStorage
+		},
+		func() (schema.GroupVersionResource, rest.Storage) {
+			whoAmIReqGVR := c.ExtraConfig.IdentityConciergeGroupVersion.WithResource("whoamirequests")
+			whoAmIStorage := whoamirequest.NewREST(whoAmIReqGVR.GroupResource())
+			return whoAmIReqGVR, whoAmIStorage
+		},
+	} {
+		gvr, storage := f()
+		errs = append(errs,
+			s.GenericAPIServer.InstallAPIGroup(
+				&genericapiserver.APIGroupInfo{
+					PrioritizedVersions:          []schema.GroupVersion{gvr.GroupVersion()},
+					VersionedResourcesStorageMap: map[string]map[string]rest.Storage{gvr.Version: {gvr.Resource: storage}},
+					OptionsExternalVersion:       &schema.GroupVersion{Version: "v1"},
+					Scheme:                       c.ExtraConfig.Scheme,
+					ParameterCodec:               metav1.ParameterCodec,
+					NegotiatedSerializer:         c.ExtraConfig.NegotiatedSerializer,
+				},
+			),
+		)
+	}
+	if err := errors.NewAggregate(errs); err != nil {
+		return nil, fmt.Errorf("could not install API groups: %w", err)
 	}
 
 	s.GenericAPIServer.AddPostStartHookOrDie("start-controllers",
 		func(postStartContext genericapiserver.PostStartHookContext) error {
-			klog.InfoS("start-controllers post start hook starting")
+			plog.Debug("start-controllers post start hook starting")
 
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() {

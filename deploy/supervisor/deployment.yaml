@@ -1,9 +1,9 @@
-#! Copyright 2020 the Pinniped contributors. All Rights Reserved.
+#! Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 #! SPDX-License-Identifier: Apache-2.0
 
 #@ load("@ytt:data", "data")
 #@ load("@ytt:json", "json")
-#@ load("helpers.lib.yaml", "defaultLabel", "labels", "namespace", "defaultResourceName", "defaultResourceNameWithSuffix")
+#@ load("helpers.lib.yaml", "defaultLabel", "labels", "namespace", "defaultResourceName", "defaultResourceNameWithSuffix", "getAndValidateLogLevel")
 
 #@ if not data.values.into_namespace:
 ---
@@ -30,9 +30,13 @@ metadata:
 data:
   #@yaml/text-templated-strings
   pinniped.yaml: |
+    apiGroupSuffix: (@= data.values.api_group_suffix @)
     names:
       defaultTLSCertificateSecret: (@= defaultResourceNameWithSuffix("default-tls-certificate") @)
     labels: (@= json.encode(labels()).rstrip() @)
+    (@ if data.values.log_level: @)
+    logLevel: (@= getAndValidateLogLevel() @)
+    (@ end @)
 ---
 #@ if data.values.image_pull_dockerconfigjson and data.values.image_pull_dockerconfigjson != "":
 apiVersion: v1
@@ -61,8 +65,8 @@ spec:
       labels: #@ defaultLabel()
     spec:
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
+        runAsUser: #@ data.values.run_as_user
+        runAsGroup: #@ data.values.run_as_group
       serviceAccountName: #@ defaultResourceName()
       #@ if data.values.image_pull_dockerconfigjson and data.values.image_pull_dockerconfigjson != "":
       imagePullSecrets:
@@ -129,6 +133,9 @@ spec:
               - path: "namespace"
                 fieldRef:
                   fieldPath: metadata.namespace
+              - path: "name"
+                fieldRef:
+                  fieldPath: metadata.name
       #! This will help make sure our multiple pods run on different nodes, making
       #! our deployment "more" "HA".
       affinity:

@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package integration
@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	loginv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/login/v1alpha1"
+	loginv1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/login/v1alpha1"
 	"go.pinniped.dev/internal/testutil"
 	"go.pinniped.dev/test/library"
 )
@@ -21,6 +21,8 @@ import (
 func TestAPIServingCertificateAutoCreationAndRotation(t *testing.T) {
 	env := library.IntegrationEnv(t)
 	defaultServingCertResourceName := env.ConciergeAppName + "-api-tls-serving-certificate"
+
+	library.AssertNoRestartsDuringTest(t, env.ConciergeNamespace, "")
 
 	tests := []struct {
 		name          string
@@ -73,13 +75,17 @@ func TestAPIServingCertificateAutoCreationAndRotation(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			kubeClient := library.NewClientset(t)
+			kubeClient := library.NewKubernetesClientset(t)
 			aggregatedClient := library.NewAggregatedClientset(t)
 			conciergeClient := library.NewConciergeClientset(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 
-			const apiServiceName = "v1alpha1.login.concierge.pinniped.dev"
+			apiServiceName := "v1alpha1.login.concierge." + env.APIGroupSuffix
+
+			// Create a testWebhook so we have a legitimate authenticator to pass to the
+			// TokenCredentialRequest API.
+			testWebhook := library.CreateTestWebhookAuthenticator(ctx, t)
 
 			// Get the initial auto-generated version of the Secret.
 			secret, err := kubeClient.CoreV1().Secrets(env.ConciergeNamespace).Get(ctx, defaultServingCertResourceName, metav1.GetOptions{})
@@ -140,10 +146,10 @@ func TestAPIServingCertificateAutoCreationAndRotation(t *testing.T) {
 			// pod has rotated their cert, but not the other ones sitting behind the service.
 			aggregatedAPIWorking := func() bool {
 				for i := 0; i < 10; i++ {
-					_, err = conciergeClient.LoginV1alpha1().TokenCredentialRequests(env.ConciergeNamespace).Create(ctx, &loginv1alpha1.TokenCredentialRequest{
+					_, err = conciergeClient.LoginV1alpha1().TokenCredentialRequests().Create(ctx, &loginv1alpha1.TokenCredentialRequest{
 						TypeMeta:   metav1.TypeMeta{},
 						ObjectMeta: metav1.ObjectMeta{},
-						Spec:       loginv1alpha1.TokenCredentialRequestSpec{Token: "not a good token"},
+						Spec:       loginv1alpha1.TokenCredentialRequestSpec{Token: "not a good token", Authenticator: testWebhook},
 					}, metav1.CreateOptions{})
 					if err != nil {
 						break

@@ -1,0 +1,74 @@
+#! Copyright 2020 the Pinniped contributors. All Rights Reserved.
+#! SPDX-License-Identifier: Apache-2.0
+
+#@ load("@ytt:data", "data")
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: dex
+  labels:
+    app: proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      volumes:
+        - name: log-dir
+          emptyDir: {}
+      containers:
+        - name: proxy
+          image: projects.registry.vmware.com/pinniped/test-forward-proxy
+          imagePullPolicy: Always
+          ports:
+          - name: http
+            containerPort: 3128
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+            limits:
+              cpu: "10m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: log-dir
+              mountPath: "/var/log/squid/"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+        - name: accesslogs
+          image: debian:10.8-slim
+          command:
+            - "/bin/sh"
+            - "-c"
+          args:
+            - tail -F /var/log/squid/access.log
+          volumeMounts:
+            - name: log-dir
+              mountPath: "/var/log/squid/"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: dex
+  labels:
+    app: proxy
+spec:
+  type: NodePort
+  selector:
+    app: proxy
+  ports:
+    - port: 3128
+      nodePort: #@ data.values.ports.node

@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package supervisorconfig
@@ -9,19 +9,20 @@ import (
 	"net/url"
 	"strings"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	corev1informers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/klog/v2"
 
-	"go.pinniped.dev/generated/1.19/client/supervisor/informers/externalversions/config/v1alpha1"
+	"go.pinniped.dev/generated/latest/client/supervisor/informers/externalversions/config/v1alpha1"
 	pinnipedcontroller "go.pinniped.dev/internal/controller"
 	"go.pinniped.dev/internal/controllerlib"
+	"go.pinniped.dev/internal/plog"
 )
 
 type tlsCertObserverController struct {
 	issuerTLSCertSetter             IssuerTLSCertSetter
 	defaultTLSCertificateSecretName string
-	oidcProviderInformer            v1alpha1.OIDCProviderInformer
+	federationDomainInformer        v1alpha1.FederationDomainInformer
 	secretInformer                  corev1informers.SecretInformer
 }
 
@@ -34,7 +35,7 @@ func NewTLSCertObserverController(
 	issuerTLSCertSetter IssuerTLSCertSetter,
 	defaultTLSCertificateSecretName string,
 	secretInformer corev1informers.SecretInformer,
-	oidcProviderInformer v1alpha1.OIDCProviderInformer,
+	federationDomainInformer v1alpha1.FederationDomainInformer,
 	withInformer pinnipedcontroller.WithInformerOptionFunc,
 ) controllerlib.Controller {
 	return controllerlib.New(
@@ -43,17 +44,17 @@ func NewTLSCertObserverController(
 			Syncer: &tlsCertObserverController{
 				issuerTLSCertSetter:             issuerTLSCertSetter,
 				defaultTLSCertificateSecretName: defaultTLSCertificateSecretName,
-				oidcProviderInformer:            oidcProviderInformer,
+				federationDomainInformer:        federationDomainInformer,
 				secretInformer:                  secretInformer,
 			},
 		},
 		withInformer(
 			secretInformer,
-			pinnipedcontroller.MatchAnythingFilter(nil),
+			pinnipedcontroller.MatchAnySecretOfTypeFilter(v1.SecretTypeTLS, nil),
 			controllerlib.InformerOption{},
 		),
 		withInformer(
-			oidcProviderInformer,
+			federationDomainInformer,
 			pinnipedcontroller.MatchAnythingFilter(nil),
 			controllerlib.InformerOption{},
 		),
@@ -62,12 +63,12 @@ func NewTLSCertObserverController(
 
 func (c *tlsCertObserverController) Sync(ctx controllerlib.Context) error {
 	ns := ctx.Key.Namespace
-	allProviders, err := c.oidcProviderInformer.Lister().OIDCProviders(ns).List(labels.Everything())
+	allProviders, err := c.federationDomainInformer.Lister().FederationDomains(ns).List(labels.Everything())
 	if err != nil {
-		return fmt.Errorf("failed to list OIDCProviders: %w", err)
+		return fmt.Errorf("failed to list FederationDomains: %w", err)
 	}
 
-	// Rebuild the whole map on any change to any Secret or OIDCProvider, because either can have changes that
+	// Rebuild the whole map on any change to any Secret or FederationDomain, because either can have changes that
 	// can cause the map to need to be updated.
 	issuerHostToTLSCertMap := map[string]*tls.Certificate{}
 
@@ -78,7 +79,7 @@ func (c *tlsCertObserverController) Sync(ctx controllerlib.Context) error {
 		}
 		issuerURL, err := url.Parse(provider.Spec.Issuer)
 		if err != nil {
-			klog.InfoS("tlsCertObserverController Sync found an invalid issuer URL", "namespace", ns, "issuer", provider.Spec.Issuer)
+			plog.Debug("tlsCertObserverController Sync found an invalid issuer URL", "namespace", ns, "issuer", provider.Spec.Issuer)
 			continue
 		}
 		certFromSecret, err := c.certFromSecret(ns, secretName)
@@ -89,7 +90,7 @@ func (c *tlsCertObserverController) Sync(ctx controllerlib.Context) error {
 		issuerHostToTLSCertMap[lowercaseHostWithoutPort(issuerURL)] = certFromSecret
 	}
 
-	klog.InfoS("tlsCertObserverController Sync updated the TLS cert cache", "issuerHostCount", len(issuerHostToTLSCertMap))
+	plog.Debug("tlsCertObserverController Sync updated the TLS cert cache", "issuerHostCount", len(issuerHostToTLSCertMap))
 	c.issuerTLSCertSetter.SetIssuerHostToTLSCertMap(issuerHostToTLSCertMap)
 
 	defaultCert, err := c.certFromSecret(ns, c.defaultTLSCertificateSecretName)
@@ -105,12 +106,12 @@ func (c *tlsCertObserverController) Sync(ctx controllerlib.Context) error {
 func (c *tlsCertObserverController) certFromSecret(ns string, secretName string) (*tls.Certificate, error) {
 	tlsSecret, err := c.secretInformer.Lister().Secrets(ns).Get(secretName)
 	if err != nil {
-		klog.InfoS("tlsCertObserverController Sync could not find TLS cert secret", "namespace", ns, "secretName", secretName)
+		plog.Debug("tlsCertObserverController Sync could not find TLS cert secret", "namespace", ns, "secretName", secretName)
 		return nil, err
 	}
 	certFromSecret, err := tls.X509KeyPair(tlsSecret.Data["tls.crt"], tlsSecret.Data["tls.key"])
 	if err != nil {
-		klog.InfoS("tlsCertObserverController Sync found a TLS secret with Data in an unexpected format", "namespace", ns, "secretName", secretName)
+		plog.Debug("tlsCertObserverController Sync found a TLS secret with Data in an unexpected format", "namespace", ns, "secretName", secretName)
 		return nil, err
 	}
 	return &certFromSecret, nil

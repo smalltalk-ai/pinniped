@@ -1,9 +1,9 @@
-#! Copyright 2020 the Pinniped contributors. All Rights Reserved.
+#! Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 #! SPDX-License-Identifier: Apache-2.0
 
 #@ load("@ytt:data", "data")
 #@ load("@ytt:json", "json")
-#@ load("helpers.lib.yaml", "defaultLabel", "labels", "namespace", "defaultResourceName", "defaultResourceNameWithSuffix")
+#@ load("helpers.lib.yaml", "defaultLabel", "labels", "namespace", "defaultResourceName", "defaultResourceNameWithSuffix", "getAndValidateLogLevel", "pinnipedDevAPIGroupWithPrefix")
 
 #@ if not data.values.into_namespace:
 ---
@@ -37,6 +37,7 @@ data:
       servingCertificate:
         durationSeconds: (@= str(data.values.api_serving_certificate_duration_seconds) @)
         renewBeforeSeconds: (@= str(data.values.api_serving_certificate_renew_before_seconds) @)
+    apiGroupSuffix: (@= data.values.api_group_suffix @)
     names:
       servingCertificateSecret: (@= defaultResourceNameWithSuffix("api-tls-serving-certificate") @)
       credentialIssuer: (@= defaultResourceNameWithSuffix("config") @)
@@ -57,6 +58,9 @@ data:
       imagePullSecrets:
         - image-pull-secret
       (@ end @)
+    (@ if data.values.log_level: @)
+    logLevel: (@= getAndValidateLogLevel() @)
+    (@ end @)
 ---
 #@ if data.values.image_pull_dockerconfigjson and data.values.image_pull_dockerconfigjson != "":
 apiVersion: v1
@@ -87,8 +91,8 @@ spec:
         scheduler.alpha.kubernetes.io/critical-pod: ""
     spec:
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
+        runAsUser: #@ data.values.run_as_user
+        runAsGroup: #@ data.values.run_as_group
       serviceAccountName: #@ defaultResourceName()
       #@ if data.values.image_pull_dockerconfigjson and data.values.image_pull_dockerconfigjson != "":
       imagePullSecrets:
@@ -145,6 +149,9 @@ spec:
               - path: "labels"
                 fieldRef:
                   fieldPath: metadata.labels
+              - path: "name"
+                fieldRef:
+                  fieldPath: metadata.name
               - path: "namespace"
                 fieldRef:
                   fieldPath: metadata.namespace
@@ -185,13 +192,29 @@ spec:
 apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:
-  name: v1alpha1.login.concierge.pinniped.dev
+  name: #@ pinnipedDevAPIGroupWithPrefix("v1alpha1.login.concierge")
   labels: #@ labels()
 spec:
   version: v1alpha1
-  group: login.concierge.pinniped.dev
-  groupPriorityMinimum: 2500
-  versionPriority: 10
+  group: #@ pinnipedDevAPIGroupWithPrefix("login.concierge")
+  groupPriorityMinimum: 9900
+  versionPriority: 15
+  #! caBundle: Do not include this key here. Starts out null, will be updated/owned by the golang code.
+  service:
+    name: #@ defaultResourceNameWithSuffix("api")
+    namespace: #@ namespace()
+    port: 443
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: #@ pinnipedDevAPIGroupWithPrefix("v1alpha1.identity.concierge")
+  labels: #@ labels()
+spec:
+  version: v1alpha1
+  group: #@ pinnipedDevAPIGroupWithPrefix("identity.concierge")
+  groupPriorityMinimum: 9900
+  versionPriority: 15
   #! caBundle: Do not include this key here. Starts out null, will be updated/owned by the golang code.
   service:
     name: #@ defaultResourceNameWithSuffix("api")

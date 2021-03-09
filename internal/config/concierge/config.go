@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package concierge contains functionality to load/store Config's from/to
@@ -13,6 +13,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"go.pinniped.dev/internal/constable"
+	"go.pinniped.dev/internal/groupsuffix"
+	"go.pinniped.dev/internal/plog"
 )
 
 const (
@@ -39,14 +41,23 @@ func FromPath(path string) (*Config, error) {
 	}
 
 	maybeSetAPIDefaults(&config.APIConfig)
+	maybeSetAPIGroupSuffixDefault(&config.APIGroupSuffix)
 	maybeSetKubeCertAgentDefaults(&config.KubeCertAgentConfig)
 
 	if err := validateAPI(&config.APIConfig); err != nil {
 		return nil, fmt.Errorf("validate api: %w", err)
 	}
 
+	if err := validateAPIGroupSuffix(*config.APIGroupSuffix); err != nil {
+		return nil, fmt.Errorf("validate apiGroupSuffix: %w", err)
+	}
+
 	if err := validateNames(&config.NamesConfig); err != nil {
 		return nil, fmt.Errorf("validate names: %w", err)
+	}
+
+	if err := plog.ValidateAndSetLogLevelGlobally(config.LogLevel); err != nil {
+		return nil, fmt.Errorf("validate log level: %w", err)
 	}
 
 	if config.Labels == nil {
@@ -63,6 +74,12 @@ func maybeSetAPIDefaults(apiConfig *APIConfigSpec) {
 
 	if apiConfig.ServingCertificateConfig.RenewBeforeSeconds == nil {
 		apiConfig.ServingCertificateConfig.RenewBeforeSeconds = int64Ptr(about9Months)
+	}
+}
+
+func maybeSetAPIGroupSuffixDefault(apiGroupSuffix **string) {
+	if *apiGroupSuffix == nil {
+		*apiGroupSuffix = stringPtr(groupsuffix.PinnipedDefaultSuffix)
 	}
 }
 
@@ -107,6 +124,10 @@ func validateAPI(apiConfig *APIConfigSpec) error {
 	}
 
 	return nil
+}
+
+func validateAPIGroupSuffix(apiGroupSuffix string) error {
+	return groupsuffix.Validate(apiGroupSuffix)
 }
 
 func int64Ptr(i int64) *int64 {

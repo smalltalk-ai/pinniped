@@ -27,7 +27,7 @@ import (
 // This could certainly be made configurable by an installer of pinniped, but we
 // will see if we can save adding a configuration knob with a reasonable default
 // here.
-const certBackdate = 5 * time.Minute
+const certBackdate = 10 * time.Second
 
 type env struct {
 	// secure random number generators for various steps (usually crypto/rand.Reader, but broken out here for tests).
@@ -136,6 +136,13 @@ func (c *CA) Bundle() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.caCertBytes})
 }
 
+// Pool returns the current CA signing bundle as a *x509.CertPool.
+func (c *CA) Pool() *x509.CertPool {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(c.Bundle())
+	return pool
+}
+
 // Issue a new server certificate for the given identity and duration.
 func (c *CA) Issue(subject pkix.Name, dnsNames []string, ips []net.IP, ttl time.Duration) (*tls.Certificate, error) {
 	// Choose a random 128 bit serial number.
@@ -194,7 +201,7 @@ func (c *CA) Issue(subject pkix.Name, dnsNames []string, ips []net.IP, ttl time.
 }
 
 // IssuePEM issues a new server certificate for the given identity and duration, returning it as a pair of
-//  PEM-formatted byte slices for the certificate and private key.
+// PEM-formatted byte slices for the certificate and private key.
 func (c *CA) IssuePEM(subject pkix.Name, dnsNames []string, ttl time.Duration) ([]byte, []byte, error) {
 	return toPEM(c.Issue(subject, dnsNames, nil, ttl))
 }

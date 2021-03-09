@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package kubecertagent
@@ -16,9 +16,11 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
-	pinnipedclientset "go.pinniped.dev/generated/1.19/client/concierge/clientset/versioned"
+	pinnipedclientset "go.pinniped.dev/generated/latest/client/concierge/clientset/versioned"
 	pinnipedcontroller "go.pinniped.dev/internal/controller"
+	"go.pinniped.dev/internal/controller/issuerconfig"
 	"go.pinniped.dev/internal/controllerlib"
+	"go.pinniped.dev/internal/plog"
 )
 
 // These constants are the default values for the kube-controller-manager flags. If the flags are
@@ -31,6 +33,7 @@ const (
 type annotaterController struct {
 	agentPodConfig                 *AgentPodConfig
 	credentialIssuerLocationConfig *CredentialIssuerLocationConfig
+	credentialIssuerLabels         map[string]string
 	clock                          clock.Clock
 	k8sClient                      kubernetes.Interface
 	pinnipedAPIClient              pinnipedclientset.Interface
@@ -49,6 +52,7 @@ type annotaterController struct {
 func NewAnnotaterController(
 	agentPodConfig *AgentPodConfig,
 	credentialIssuerLocationConfig *CredentialIssuerLocationConfig,
+	credentialIssuerLabels map[string]string,
 	clock clock.Clock,
 	k8sClient kubernetes.Interface,
 	pinnipedAPIClient pinnipedclientset.Interface,
@@ -62,6 +66,7 @@ func NewAnnotaterController(
 			Syncer: &annotaterController{
 				agentPodConfig:                 agentPodConfig,
 				credentialIssuerLocationConfig: credentialIssuerLocationConfig,
+				credentialIssuerLabels:         credentialIssuerLabels,
 				clock:                          clock,
 				k8sClient:                      k8sClient,
 				pinnipedAPIClient:              pinnipedAPIClient,
@@ -120,7 +125,13 @@ func (c *annotaterController) Sync(ctx controllerlib.Context) error {
 			keyPath,
 		); err != nil {
 			err = fmt.Errorf("cannot update agent pod: %w", err)
-			strategyResultUpdateErr := createOrUpdateCredentialIssuer(ctx.Context, *c.credentialIssuerLocationConfig, nil, c.clock, c.pinnipedAPIClient, err)
+			strategyResultUpdateErr := issuerconfig.UpdateStrategy(
+				ctx.Context,
+				c.credentialIssuerLocationConfig.Name,
+				c.credentialIssuerLabels,
+				c.pinnipedAPIClient,
+				strategyError(c.clock, err),
+			)
 			if strategyResultUpdateErr != nil {
 				// If the CI update fails, then we probably want to try again. This controller will get
 				// called again because of the pod create failure, so just try the CI update again then.
@@ -177,7 +188,7 @@ func (c *annotaterController) reallyUpdateAgentPod(
 	updatedAgentPod.Annotations[agentPodCertPathAnnotationKey] = certPath
 	updatedAgentPod.Annotations[agentPodKeyPathAnnotationKey] = keyPath
 
-	klog.InfoS(
+	plog.Debug(
 		"updating agent pod annotations",
 		"pod",
 		klog.KObj(updatedAgentPod),

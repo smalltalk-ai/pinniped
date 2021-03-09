@@ -1,11 +1,10 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package webhookcachefiller implements a controller for filling an authncache.Cache with each added/updated WebhookAuthenticator.
 package webhookcachefiller
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -20,9 +19,10 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
 
-	auth1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/authentication/v1alpha1"
-	authinformers "go.pinniped.dev/generated/1.19/client/concierge/informers/externalversions/authentication/v1alpha1"
+	auth1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/authentication/v1alpha1"
+	authinformers "go.pinniped.dev/generated/latest/client/concierge/informers/externalversions/authentication/v1alpha1"
 	pinnipedcontroller "go.pinniped.dev/internal/controller"
+	pinnipedauthenticator "go.pinniped.dev/internal/controller/authenticator"
 	"go.pinniped.dev/internal/controller/authenticator/authncache"
 	"go.pinniped.dev/internal/controllerlib"
 )
@@ -54,7 +54,7 @@ type controller struct {
 
 // Sync implements controllerlib.Syncer.
 func (c *controller) Sync(ctx controllerlib.Context) error {
-	obj, err := c.webhooks.Lister().WebhookAuthenticators(ctx.Key.Namespace).Get(ctx.Key.Name)
+	obj, err := c.webhooks.Lister().Get(ctx.Key.Name)
 	if err != nil && errors.IsNotFound(err) {
 		c.log.Info("Sync() found that the WebhookAuthenticator does not exist yet or was deleted")
 		return nil
@@ -69,10 +69,9 @@ func (c *controller) Sync(ctx controllerlib.Context) error {
 	}
 
 	c.cache.Store(authncache.Key{
-		APIGroup:  auth1alpha1.GroupName,
-		Kind:      "WebhookAuthenticator",
-		Namespace: ctx.Key.Namespace,
-		Name:      ctx.Key.Name,
+		APIGroup: auth1alpha1.GroupName,
+		Kind:     "WebhookAuthenticator",
+		Name:     ctx.Key.Name,
 	}, webhookAuthenticator)
 	c.log.WithValues("webhook", klog.KObj(obj), "endpoint", obj.Spec.Endpoint).Info("added new webhook authenticator")
 	return nil
@@ -92,7 +91,7 @@ func newWebhookAuthenticator(
 	defer func() { _ = os.Remove(temp.Name()) }()
 
 	cluster := &clientcmdapi.Cluster{Server: spec.Endpoint}
-	cluster.CertificateAuthorityData, err = getCABundle(spec.TLS)
+	cluster.CertificateAuthorityData, err = pinnipedauthenticator.CABundle(spec.TLS)
 	if err != nil {
 		return nil, fmt.Errorf("invalid TLS configuration: %w", err)
 	}
@@ -119,12 +118,5 @@ func newWebhookAuthenticator(
 	// custom proxy stuff used by the API server.
 	var customDial net.DialFunc
 
-	return webhook.New(temp.Name(), version, implicitAuds, customDial)
-}
-
-func getCABundle(spec *auth1alpha1.TLSSpec) ([]byte, error) {
-	if spec == nil {
-		return nil, nil
-	}
-	return base64.StdEncoding.DecodeString(spec.CertificateAuthorityData)
+	return webhook.New(temp.Name(), version, implicitAuds, *webhook.DefaultRetryBackoff(), customDial)
 }

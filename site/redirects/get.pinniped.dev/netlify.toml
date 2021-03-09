@@ -1,0 +1,17 @@
+[[redirects]]
+  from = "/"
+  to = "https://pinniped.dev"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/latest/*"
+  to = "https://github.com/vmware-tanzu/pinniped/releases/latest/download/:splat"
+  status = 302
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "https://github.com/vmware-tanzu/pinniped/releases/download/:splat"
+  status = 302
+  force = true

@@ -1,6 +1,8 @@
 # https://github.com/golangci/golangci-lint#config-file
 run:
   deadline: 1m
+  skip-dirs:
+    - generated
 
 linters:
   disable-all: true
@@ -30,7 +32,6 @@ linters:
   - gocritic
   - gocyclo
   - godot
-  - goerr113
   - goheader
   - goimports
   - golint
@@ -56,15 +57,18 @@ issues:
     linters:
     - funlen
     - gochecknoglobals
-    - goerr113
 
 linters-settings:
   funlen:
-    lines: 125
+    lines: 150
     statements: 50
   goheader:
+    values:
+      regexp:
+        # YYYY or YYYY-YYYY
+        YEARS: \d\d\d\d(-\d\d\d\d)?
     template: |-
-        Copyright 2020 the Pinniped contributors. All Rights Reserved.
+        Copyright {{YEARS}} the Pinniped contributors. All Rights Reserved.
         SPDX-License-Identifier: Apache-2.0
   goimports:
     local-prefixes: go.pinniped.dev

@@ -1,10 +1,11 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -14,24 +15,35 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/clock"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/version"
 	"k8s.io/client-go/rest"
-	restclient "k8s.io/client-go/rest"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/klogr"
 
-	pinnipedclientset "go.pinniped.dev/generated/1.19/client/supervisor/clientset/versioned"
-	pinnipedinformers "go.pinniped.dev/generated/1.19/client/supervisor/informers/externalversions"
+	configv1alpha1 "go.pinniped.dev/generated/latest/apis/supervisor/config/v1alpha1"
+	pinnipedclientset "go.pinniped.dev/generated/latest/client/supervisor/clientset/versioned"
+	pinnipedinformers "go.pinniped.dev/generated/latest/client/supervisor/informers/externalversions"
 	"go.pinniped.dev/internal/config/supervisor"
 	"go.pinniped.dev/internal/controller/supervisorconfig"
+	"go.pinniped.dev/internal/controller/supervisorconfig/generator"
+	"go.pinniped.dev/internal/controller/supervisorconfig/upstreamwatcher"
+	"go.pinniped.dev/internal/controller/supervisorstorage"
 	"go.pinniped.dev/internal/controllerlib"
+	"go.pinniped.dev/internal/deploymentref"
 	"go.pinniped.dev/internal/downward"
+	"go.pinniped.dev/internal/groupsuffix"
+	"go.pinniped.dev/internal/kubeclient"
 	"go.pinniped.dev/internal/oidc/jwks"
 	"go.pinniped.dev/internal/oidc/provider"
 	"go.pinniped.dev/internal/oidc/provider/manager"
+	"go.pinniped.dev/internal/plog"
+	"go.pinniped.dev/internal/secret"
 )
 
 const (
@@ -50,11 +62,11 @@ func start(ctx context.Context, l net.Listener, handler http.Handler) {
 	go func() {
 		select {
 		case err := <-errCh:
-			klog.InfoS("server exited", "err", err)
+			plog.Debug("server exited", "err", err)
 		case <-ctx.Done():
-			klog.InfoS("server context cancelled", "err", ctx.Err())
+			plog.Debug("server context cancelled", "err", ctx.Err())
 			if err := server.Shutdown(context.Background()); err != nil {
-				klog.InfoS("server shutdown failed", "err", err)
+				plog.Debug("server shutdown failed", "err", err)
 			}
 		}
 	}()
@@ -66,26 +78,42 @@ func waitForSignal() os.Signal {
 	return <-signalCh
 }
 
+//nolint:funlen
 func startControllers(
 	ctx context.Context,
 	cfg *supervisor.Config,
 	issuerManager *manager.Manager,
 	dynamicJWKSProvider jwks.DynamicJWKSProvider,
 	dynamicTLSCertProvider provider.DynamicTLSCertProvider,
+	dynamicUpstreamIDPProvider provider.DynamicUpstreamIDPProvider,
+	secretCache *secret.Cache,
+	supervisorDeployment *appsv1.Deployment,
 	kubeClient kubernetes.Interface,
 	pinnipedClient pinnipedclientset.Interface,
 	kubeInformers kubeinformers.SharedInformerFactory,
 	pinnipedInformers pinnipedinformers.SharedInformerFactory,
 ) {
+	federationDomainInformer := pinnipedInformers.Config().V1alpha1().FederationDomains()
+	secretInformer := kubeInformers.Core().V1().Secrets()
+
 	// Create controller manager.
 	controllerManager := controllerlib.
 		NewManager().
 		WithController(
-			supervisorconfig.NewOIDCProviderWatcherController(
+			supervisorstorage.GarbageCollectorController(
+				clock.RealClock{},
+				kubeClient,
+				secretInformer,
+				controllerlib.WithInformer,
+			),
+			singletonWorker,
+		).
+		WithController(
+			supervisorconfig.NewFederationDomainWatcherController(
 				issuerManager,
 				clock.RealClock{},
 				pinnipedClient,
-				pinnipedInformers.Config().V1alpha1().OIDCProviders(),
+				federationDomainInformer,
 				controllerlib.WithInformer,
 			),
 			singletonWorker,
@@ -95,8 +123,8 @@ func startControllers(
 				cfg.Labels,
 				kubeClient,
 				pinnipedClient,
-				kubeInformers.Core().V1().Secrets(),
-				pinnipedInformers.Config().V1alpha1().OIDCProviders(),
+				secretInformer,
+				federationDomainInformer,
 				controllerlib.WithInformer,
 			),
 			singletonWorker,
@@ -104,8 +132,8 @@ func startControllers(
 		WithController(
 			supervisorconfig.NewJWKSObserverController(
 				dynamicJWKSProvider,
-				kubeInformers.Core().V1().Secrets(),
-				pinnipedInformers.Config().V1alpha1().OIDCProviders(),
+				secretInformer,
+				federationDomainInformer,
 				controllerlib.WithInformer,
 			),
 			singletonWorker,
@@ -114,12 +142,106 @@ func startControllers(
 			supervisorconfig.NewTLSCertObserverController(
 				dynamicTLSCertProvider,
 				cfg.NamesConfig.DefaultTLSCertificateSecret,
-				kubeInformers.Core().V1().Secrets(),
-				pinnipedInformers.Config().V1alpha1().OIDCProviders(),
+				secretInformer,
+				federationDomainInformer,
 				controllerlib.WithInformer,
 			),
 			singletonWorker,
-		)
+		).
+		WithController(
+			generator.NewSupervisorSecretsController(
+				supervisorDeployment,
+				cfg.Labels,
+				kubeClient,
+				secretInformer,
+				func(secret []byte) {
+					plog.Debug("setting csrf cookie secret")
+					secretCache.SetCSRFCookieEncoderHashKey(secret)
+				},
+				controllerlib.WithInformer,
+				controllerlib.WithInitialEvent,
+			),
+			singletonWorker,
+		).
+		WithController(
+			generator.NewFederationDomainSecretsController(
+				generator.NewSymmetricSecretHelper(
+					"pinniped-oidc-provider-hmac-key-",
+					cfg.Labels,
+					rand.Reader,
+					generator.SecretUsageTokenSigningKey,
+					func(federationDomainIssuer string, symmetricKey []byte) {
+						plog.Debug("setting hmac secret", "issuer", federationDomainIssuer)
+						secretCache.SetTokenHMACKey(federationDomainIssuer, symmetricKey)
+					},
+				),
+				func(fd *configv1alpha1.FederationDomainStatus) *corev1.LocalObjectReference {
+					return &fd.Secrets.TokenSigningKey
+				},
+				kubeClient,
+				pinnipedClient,
+				secretInformer,
+				federationDomainInformer,
+				controllerlib.WithInformer,
+			),
+			singletonWorker,
+		).
+		WithController(
+			generator.NewFederationDomainSecretsController(
+				generator.NewSymmetricSecretHelper(
+					"pinniped-oidc-provider-upstream-state-signature-key-",
+					cfg.Labels,
+					rand.Reader,
+					generator.SecretUsageStateSigningKey,
+					func(federationDomainIssuer string, symmetricKey []byte) {
+						plog.Debug("setting state signature key", "issuer", federationDomainIssuer)
+						secretCache.SetStateEncoderHashKey(federationDomainIssuer, symmetricKey)
+					},
+				),
+				func(fd *configv1alpha1.FederationDomainStatus) *corev1.LocalObjectReference {
+					return &fd.Secrets.StateSigningKey
+				},
+				kubeClient,
+				pinnipedClient,
+				secretInformer,
+				federationDomainInformer,
+				controllerlib.WithInformer,
+			),
+			singletonWorker,
+		).
+		WithController(
+			generator.NewFederationDomainSecretsController(
+				generator.NewSymmetricSecretHelper(
+					"pinniped-oidc-provider-upstream-state-encryption-key-",
+					cfg.Labels,
+					rand.Reader,
+					generator.SecretUsageStateEncryptionKey,
+					func(federationDomainIssuer string, symmetricKey []byte) {
+						plog.Debug("setting state encryption key", "issuer", federationDomainIssuer)
+						secretCache.SetStateEncoderBlockKey(federationDomainIssuer, symmetricKey)
+					},
+				),
+				func(fd *configv1alpha1.FederationDomainStatus) *corev1.LocalObjectReference {
+					return &fd.Secrets.StateEncryptionKey
+				},
+				kubeClient,
+				pinnipedClient,
+				secretInformer,
+				federationDomainInformer,
+				controllerlib.WithInformer,
+			),
+			singletonWorker,
+		).
+		WithController(
+			upstreamwatcher.New(
+				dynamicUpstreamIDPProvider,
+				pinnipedClient,
+				pinnipedInformers.IDP().V1alpha1().OIDCIdentityProviders(),
+				secretInformer,
+				klogr.New(),
+				controllerlib.WithInformer,
+			),
+			singletonWorker)
 
 	kubeInformers.Start(ctx.Done())
 	pinnipedInformers.Start(ctx.Done())
@@ -131,44 +253,33 @@ func startControllers(
 	go controllerManager.Start(ctx)
 }
 
-func newClients() (kubernetes.Interface, pinnipedclientset.Interface, error) {
-	kubeConfig, err := restclient.InClusterConfig()
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not load in-cluster configuration: %w", err)
-	}
+func run(podInfo *downward.PodInfo, cfg *supervisor.Config) error {
+	serverInstallationNamespace := podInfo.Namespace
 
-	// Connect to the core Kubernetes API.
-	kubeClient, err := kubernetes.NewForConfig(kubeConfig)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not create kube client: %w", err)
-	}
-
-	// Connect to the Pinniped API.
-	pinnipedClient, err := pinnipedclientset.NewForConfig(kubeConfig)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not create pinniped client: %w", err)
-	}
-
-	return kubeClient, pinnipedClient, nil
-}
-
-func run(serverInstallationNamespace string, cfg *supervisor.Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kubeClient, pinnipedClient, err := newClients()
+	dref, supervisorDeployment, err := deploymentref.New(podInfo)
+	if err != nil {
+		return fmt.Errorf("cannot create deployment ref: %w", err)
+	}
+
+	client, err := kubeclient.New(
+		dref,
+		kubeclient.WithMiddleware(groupsuffix.New(*cfg.APIGroupSuffix)),
+	)
 	if err != nil {
 		return fmt.Errorf("cannot create k8s client: %w", err)
 	}
 
 	kubeInformers := kubeinformers.NewSharedInformerFactoryWithOptions(
-		kubeClient,
+		client.Kubernetes,
 		defaultResyncInterval,
 		kubeinformers.WithNamespace(serverInstallationNamespace),
 	)
 
 	pinnipedInformers := pinnipedinformers.NewSharedInformerFactoryWithOptions(
-		pinnipedClient,
+		client.PinnipedSupervisor,
 		defaultResyncInterval,
 		pinnipedinformers.WithNamespace(serverInstallationNamespace),
 	)
@@ -181,9 +292,17 @@ func run(serverInstallationNamespace string, cfg *supervisor.Config) error {
 
 	dynamicJWKSProvider := jwks.NewDynamicJWKSProvider()
 	dynamicTLSCertProvider := provider.NewDynamicTLSCertProvider()
+	dynamicUpstreamIDPProvider := provider.NewDynamicUpstreamIDPProvider()
+	secretCache := secret.Cache{}
 
 	// OIDC endpoints will be served by the oidProvidersManager, and any non-OIDC paths will fallback to the healthMux.
-	oidProvidersManager := manager.NewManager(healthMux, dynamicJWKSProvider)
+	oidProvidersManager := manager.NewManager(
+		healthMux,
+		dynamicJWKSProvider,
+		dynamicUpstreamIDPProvider,
+		&secretCache,
+		client.Kubernetes.CoreV1().Secrets(serverInstallationNamespace),
+	)
 
 	startControllers(
 		ctx,
@@ -191,8 +310,11 @@ func run(serverInstallationNamespace string, cfg *supervisor.Config) error {
 		oidProvidersManager,
 		dynamicJWKSProvider,
 		dynamicTLSCertProvider,
-		kubeClient,
-		pinnipedClient,
+		dynamicUpstreamIDPProvider,
+		&secretCache,
+		supervisorDeployment,
+		client.Kubernetes,
+		client.PinnipedSupervisor,
 		kubeInformers,
 		pinnipedInformers,
 	)
@@ -211,7 +333,7 @@ func run(serverInstallationNamespace string, cfg *supervisor.Config) error {
 		GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			cert := dynamicTLSCertProvider.GetTLSCert(strings.ToLower(info.ServerName))
 			defaultCert := dynamicTLSCertProvider.GetDefaultTLSCert()
-			klog.InfoS("GetCertificate called for port 8443",
+			plog.Debug("GetCertificate called for port 8443",
 				"info.ServerName", info.ServerName,
 				"foundSNICert", cert != nil,
 				"foundDefaultCert", defaultCert != nil,
@@ -228,13 +350,13 @@ func run(serverInstallationNamespace string, cfg *supervisor.Config) error {
 	defer func() { _ = httpsListener.Close() }()
 	start(ctx, httpsListener, oidProvidersManager)
 
-	klog.InfoS("supervisor is ready",
+	plog.Debug("supervisor is ready",
 		"httpAddress", httpListener.Addr().String(),
 		"httpsAddress", httpsListener.Addr().String(),
 	)
 
 	gotSignal := waitForSignal()
-	klog.InfoS("supervisor exiting", "signal", gotSignal)
+	plog.Debug("supervisor exiting", "signal", gotSignal)
 
 	return nil
 }
@@ -242,6 +364,7 @@ func run(serverInstallationNamespace string, cfg *supervisor.Config) error {
 func main() {
 	logs.InitLogs()
 	defer logs.FlushLogs()
+	plog.RemoveKlogGlobalFlags() // move this whenever the below code gets refactored to use cobra
 
 	klog.Infof("Running %s at %#v", rest.DefaultKubernetesUserAgent(), version.Get())
 	klog.Infof("Command-line arguments were: %s %s %s", os.Args[0], os.Args[1], os.Args[2])
@@ -258,7 +381,7 @@ func main() {
 		klog.Fatal(fmt.Errorf("could not load config: %w", err))
 	}
 
-	if err := run(podInfo.Namespace, cfg); err != nil {
+	if err := run(podInfo, cfg); err != nil {
 		klog.Fatal(err)
 	}
 }

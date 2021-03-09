@@ -1,4 +1,4 @@
-// Copyright 2020 the Pinniped contributors. All Rights Reserved.
+// Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 package apicerts
@@ -17,18 +17,19 @@ import (
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	aggregatorv1fake "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/fake"
 
-	loginv1alpha1 "go.pinniped.dev/generated/1.19/apis/concierge/login/v1alpha1"
+	loginv1alpha1 "go.pinniped.dev/generated/latest/apis/concierge/login/v1alpha1"
 )
 
 func TestUpdateAPIService(t *testing.T) {
 	const apiServiceName = "v1alpha1.login.concierge.pinniped.dev"
 
 	tests := []struct {
-		name        string
-		mocks       func(*aggregatorv1fake.Clientset)
-		caInput     []byte
-		wantObjects []apiregistrationv1.APIService
-		wantErr     string
+		name             string
+		mocks            func(*aggregatorv1fake.Clientset)
+		caInput          []byte
+		serviceNamespace string
+		wantObjects      []apiregistrationv1.APIService
+		wantErr          string
 	}{
 		{
 			name: "happy path update when the pre-existing APIService did not already have a CA bundle",
@@ -90,6 +91,36 @@ func TestUpdateAPIService(t *testing.T) {
 				Spec: apiregistrationv1.APIServiceSpec{
 					GroupPriorityMinimum: 999,
 					CABundle:             []byte("some-ca-bundle"), // unchanged
+				},
+			}},
+		},
+		{
+			name: "skip update when there is another pinniped instance",
+			mocks: func(c *aggregatorv1fake.Clientset) {
+				_ = c.Tracker().Add(&apiregistrationv1.APIService{
+					ObjectMeta: metav1.ObjectMeta{Name: apiServiceName},
+					Spec: apiregistrationv1.APIServiceSpec{
+						GroupPriorityMinimum: 999,
+						CABundle:             []byte("some-other-different-ca-bundle"),
+						Service: &apiregistrationv1.ServiceReference{
+							Namespace: "namespace-2",
+						},
+					},
+				})
+				c.PrependReactor("update", "apiservices", func(_ kubetesting.Action) (bool, runtime.Object, error) {
+					return true, nil, fmt.Errorf("should not encounter this error because update should be skipped in this case")
+				})
+			},
+			caInput:          []byte("some-ca-bundle"),
+			serviceNamespace: "namespace-1",
+			wantObjects: []apiregistrationv1.APIService{{
+				ObjectMeta: metav1.ObjectMeta{Name: apiServiceName},
+				Spec: apiregistrationv1.APIServiceSpec{
+					GroupPriorityMinimum: 999,
+					CABundle:             []byte("some-other-different-ca-bundle"), // unchanged
+					Service: &apiregistrationv1.ServiceReference{
+						Namespace: "namespace-2",
+					},
 				},
 			}},
 		},
@@ -181,7 +212,7 @@ func TestUpdateAPIService(t *testing.T) {
 				tt.mocks(client)
 			}
 
-			err := UpdateAPIService(ctx, client, loginv1alpha1.SchemeGroupVersion.Version+"."+loginv1alpha1.GroupName, tt.caInput)
+			err := UpdateAPIService(ctx, client, loginv1alpha1.SchemeGroupVersion.Version+"."+loginv1alpha1.GroupName, tt.serviceNamespace, tt.caInput)
 			if tt.wantErr != "" {
 				require.EqualError(t, err, tt.wantErr)
 				return

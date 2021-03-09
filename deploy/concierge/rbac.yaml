@@ -1,8 +1,8 @@
-#! Copyright 2020 the Pinniped contributors. All Rights Reserved.
+#! Copyright 2020-2021 the Pinniped contributors. All Rights Reserved.
 #! SPDX-License-Identifier: Apache-2.0
 
 #@ load("@ytt:data", "data")
-#@ load("helpers.lib.yaml", "labels", "namespace", "defaultResourceName", "defaultResourceNameWithSuffix")
+#@ load("helpers.lib.yaml", "labels", "namespace", "defaultResourceName", "defaultResourceNameWithSuffix", "pinnipedDevAPIGroupWithPrefix")
 
 #! Give permission to various cluster-scoped objects
 ---
@@ -17,13 +17,32 @@ rules:
     verbs: [ get, list, watch ]
   - apiGroups: [ apiregistration.k8s.io ]
     resources: [ apiservices ]
-    verbs: [ create, get, list, patch, update, watch ]
+    verbs: [ get, list, patch, update, watch ]
   - apiGroups: [ admissionregistration.k8s.io ]
     resources: [ validatingwebhookconfigurations, mutatingwebhookconfigurations ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ flowcontrol.apiserver.k8s.io ]
+    resources: [ flowschemas, prioritylevelconfigurations ]
     verbs: [ get, list, watch ]
   - apiGroups: [ policy ]
     resources: [ podsecuritypolicies ]
     verbs: [ use ]
+  - apiGroups: [ security.openshift.io ]
+    resources: [ securitycontextconstraints ]
+    verbs: [ use ]
+    resourceNames: [ nonroot ]
+  - apiGroups:
+      - #@ pinnipedDevAPIGroupWithPrefix("config.concierge")
+    resources: [ credentialissuers ]
+    verbs: [ get, list, watch, create ]
+  - apiGroups:
+      - #@ pinnipedDevAPIGroupWithPrefix("config.concierge")
+    resources: [ credentialissuers/status ]
+    verbs: [get, patch, update]
+  - apiGroups:
+      - #@ pinnipedDevAPIGroupWithPrefix("authentication.concierge")
+    resources: [ jwtauthenticators, webhookauthenticators ]
+    verbs: [ get, list, watch ]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -62,9 +81,9 @@ rules:
   - apiGroups: [ "" ]
     resources: [ pods/exec ]
     verbs: [ create ]
-  - apiGroups: [ config.concierge.pinniped.dev, authentication.concierge.pinniped.dev ]
-    resources: [ "*" ]
-    verbs: [ create, get, list, update, watch ]
+  - apiGroups: [apps]
+    resources: [replicasets,deployments]
+    verbs: [get]
 ---
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -114,17 +133,22 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: #@ defaultResourceNameWithSuffix("create-token-credential-requests")
+  name: #@ defaultResourceNameWithSuffix("pre-authn-apis")
   labels: #@ labels()
 rules:
-  - apiGroups: [ login.concierge.pinniped.dev ]
+  - apiGroups:
+      - #@ pinnipedDevAPIGroupWithPrefix("login.concierge")
     resources: [ tokencredentialrequests ]
-    verbs: [ create ]
+    verbs: [ create, list ]
+  - apiGroups:
+      - #@ pinnipedDevAPIGroupWithPrefix("identity.concierge")
+    resources: [ whoamirequests ]
+    verbs: [ create, list ]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: #@ defaultResourceNameWithSuffix("create-token-credential-requests")
+  name: #@ defaultResourceNameWithSuffix("pre-authn-apis")
   labels: #@ labels()
 subjects:
   - kind: Group
@@ -135,7 +159,7 @@ subjects:
     apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
-  name: #@ defaultResourceNameWithSuffix("create-token-credential-requests")
+  name: #@ defaultResourceNameWithSuffix("pre-authn-apis")
   apiGroup: rbac.authorization.k8s.io
 
 #! Give permissions for subjectaccessreviews, tokenreview that is needed by aggregated api servers
