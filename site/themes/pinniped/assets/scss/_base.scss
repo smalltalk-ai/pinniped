@@ -25,8 +25,12 @@ body {
     @include breakpoint(small) {
         max-width: 100%;
     }
-    &.docs {
+    &.docs.wide {
+        @include breakpoint(large) {
+            display: flex;
+        }
         @include breakpoint(extra-large) {
+            display: flex;
             max-width: 80%;
         }
     }

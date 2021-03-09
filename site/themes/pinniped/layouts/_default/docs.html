@@ -5,7 +5,7 @@
 				<h1>Pinniped Documentation</h1>
 			</div>
 		</div>
-		<div class="wrapper docs clearfix">
+		<div class="wrapper docs clearfix {{ if .Site.Params.docs_right_sidebar }}wide{{ end }}">
 			{{ partial "docs-sidebar.html" . }}
 			<div class="docs-content {{ if not .Site.Params.docs_right_sidebar }}full{{ end }}">
 				{{- with .Title -}}
