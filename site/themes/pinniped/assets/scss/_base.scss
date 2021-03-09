@@ -25,13 +25,6 @@ body {
     @include breakpoint(small) {
         max-width: 100%;
     }
-    @include breakpoint(medium) {
-    }
-    &.docs {
-        @include breakpoint(extra-large) {
-            max-width: 80%;
-        }
-    }
 }
 .clearfix {
 	*zoom: 1;
@@ -48,7 +41,7 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 300;
 }
 h1 {
-    font-size: 22px;
+    font-size: 36px;
     color: #333;
 }
 h2 {

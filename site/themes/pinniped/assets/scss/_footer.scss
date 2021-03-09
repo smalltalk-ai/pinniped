@@ -3,31 +3,24 @@
 @import 'base';
 
 footer {
-    .top-links {
-        min-height: 52px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-    }
     .left-links {
         padding: 0px;
+        float: left;
         li {
             img {
                 vertical-align: bottom;
                 margin-right: 10px;
             }
             a {
-                color: $darkgrey;
+                color: $grey;
                 font-weight: 300;
                 font-size: 12px;
                 font-family: $metropolis-light;
             }
         }
-        .mobile {
-            display: none;
-        }
     }
     .right-links {
+        float: right;
         p {
             margin: 0px;
         }
@@ -36,62 +29,30 @@ footer {
             padding-right: 10px;
             a {
                 font-size: 12px;
-                color: $darkgrey;
+                color: $grey;
                 font-family: $metropolis-light;
             }
         }
         a {
             vertical-align: middle;
         }
-        img {
-            height: 45px;
-            width: auto;
-        }
-    }
-    .bottom-links {
-        margin: 10px 0px 30px 0px;
-        float: right;
-        p {
-            font-size: 12px;
-        }
-        a {
-            font-size: 12px;
-            font-family: $metropolis-light;
-        }
-        img {
-            max-width: 75px;
-            vertical-align: middle;
-            margin-left: 30px;
-        }
     }
     @include breakpoint(small) {
-        .footer-links {
-            display: block;
-            .right-links {
-                display: none;
-            }
-            .left-links {
-                float: none;
-                margin: 10px 0px;
-                .desktop {
-                    display: none;
-                }
-                .mobile {
-                    display: inline;
-                }
-                .copywrite {
-                    display: block;
-                    margin-top:20px;
-                }
+        .left-links {
+            width: 100%;
+            float: none;
+            li {
+                display: block;
+                width: 33%;
+                float: left;
+                padding-right: 0px;
             }
         }
-        .bottom-links {
-            margin: 10px 0px 20px 0px;
-            float: none;
-            img {
-                margin-left: 0px;
-                display: block;
-                margin-top: 10px;
+        .right-links {
+            width: 100%;
+            padding-top: 20px;
+            .image {
+                display: none;
             }
         }
     }

@@ -1,19 +1,18 @@
 {{ define "main" }}
-	<main>
-		<div class="hero subpage">
-			<div class="wrapper">
-				<h1>Pinniped Documentation</h1>
-			</div>
+<main>
+	<div class="hero subpage">
+		<div class="wrapper">
+			<h1>Pinniped Documentation</h1>
 		</div>
-		<div class="wrapper docs clearfix">
-			{{ partial "docs-sidebar.html" . }}
-			<div class="docs-content {{ if not .Site.Params.docs_right_sidebar }}full{{ end }}">
-				{{- with .Title -}}
-					<h1>{{.}}</h1>
-				{{- end -}}
-				{{ .Content }}
-			</div>
-			{{ partial "docs-right-bar.html" . }}
+	</div>
+	<div class="wrapper docs clearfix">
+		{{ partial "docs-sidebar.html" . }}
+		<div class="docs-content">
+			{{- with .Title -}}
+				<h1>{{.}}</h1>
+			{{- end -}}
+			{{ .Content }}
 		</div>
-	</main>
+	</div>
+</main>
 {{ end }}

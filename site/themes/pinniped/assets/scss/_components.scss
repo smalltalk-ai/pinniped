@@ -14,6 +14,9 @@
             color: $white;
         }
     }
+    h1 {
+        color: $white;
+    }
     h2 {
         font-size: 36px;
     }
@@ -185,6 +188,7 @@
     padding-bottom: 90px;
 
     h1 {
+        color: $white;
         font-size: 46px;
         text-align: center;
         @include breakpoint(small) {
@@ -532,6 +536,14 @@
         }
         strong {
             font-family: $metropolis-medium;
+        }
+        @include breakpoint(large) {
+            width: 58%;
+            padding-right: 20px;
+        }
+        @include breakpoint(extra-large) {
+            width: 75%;
+            padding-right: 20px;
         }
     }
     .danger {
